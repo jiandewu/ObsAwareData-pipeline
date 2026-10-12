@@ -10,9 +10,8 @@ archived releases into the published dataset (see [Pipeline](#pipeline)).
 
 CDC's [data.cdc.gov](https://data.cdc.gov) API serves only the current version of each dataset;
 every release replaces the previous one. ObsAwareData publishes how values were revised over time,
-so each release has to be saved before the next one replaces it. A daily GitHub Actions workflow
-([`.github/workflows/archive.yml`](.github/workflows/archive.yml)) runs
-[`archive/archive_cdc.py`](archive/archive_cdc.py), which saves every new release of:
+so each release has to be saved before the next one replaces it.
+[`archive/archive_cdc.py`](archive/archive_cdc.py) runs once a day and saves every new release of:
 
 | Stream | Channel | Dataset | data.cdc.gov id |
 |---|---|---|---|
@@ -42,7 +41,7 @@ the download.
 | `raw_bytes`, `raw_sha256` | Size and SHA-256 of the CSV as downloaded (after decompression) |
 | `xz_bytes`, `xz_sha256` | Size and SHA-256 of the stored `.xz` file |
 | `row_count`, `column_count` | CSV records (excluding the header) and columns |
-| `source` | `cdc_api` for files archived by this workflow; `box_archive` for earlier releases (below) |
+| `source` | `cdc_api` for files saved by `archive_cdc.py`; `box_archive` for earlier releases (below) |
 | `original_filename` | For `box_archive` files, the dated file name they were saved under |
 
 To use a file: download it, check `xz_sha256`, decompress (`xz -d`), and check `raw_sha256`.
@@ -68,11 +67,9 @@ rounds half to even; the values are otherwise the same.
 | [`reference/`](reference/) | Fixed inputs: CDC's NSSP coverage map (from https://www.cdc.gov/nssp/documents/coverage-map.csv), the national geography summary, and the per-state thresholds |
 | [`tools/`](tools/) | [`fetch_census.py`](tools/fetch_census.py): the Census Bureau files the processing step uses |
 
-Each week, [`.github/workflows/refresh.yml`](.github/workflows/refresh.yml) (Saturday) rebuilds the
-dataset as of the most recent Friday and proposes it for review as a pull request on the data
-repository plus a draft release; after review, [`publish.yml`](.github/workflows/publish.yml) (run
-by hand) publishes it. Revision history is published as release assets: per state, one full file
-followed by weekly increments, listed in the data repository's `metadata/release_assets.csv`.
+Each week the dataset is rebuilt as of the most recent Friday and reviewed before it is published.
+Revision history is published as release assets: per state, one full file followed by weekly
+increments, listed in the data repository's `metadata/release_assets.csv`.
 
 Running it locally (Python 3.11, `pip install -r requirements.txt`):
 
