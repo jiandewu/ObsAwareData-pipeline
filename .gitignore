@@ -1,0 +1,11 @@
+.env
+*.env
+__pycache__/
+*.pyc
+archive_work/
+
+# Not yet published: the ETL and build code are added once cleaned for publication.
+etl/
+release/
+reference/
+requirements.txt

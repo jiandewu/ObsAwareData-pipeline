@@ -1,0 +1,39 @@
+name: Archive CDC releases
+
+on:
+  schedule:
+    - cron: "0 22 * * *"  # daily, after CDC's usual release times (Wed/Fri, about 10:00-16:00 US Eastern)
+  workflow_dispatch:
+
+permissions:
+  contents: write  # create releases, upload assets, commit the registry
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and archive new CDC releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python archive/archive_cdc.py --registry archive/registry.csv --work "$RUNNER_TEMP/archive"
+
+      - name: Commit the registry
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add archive/registry.csv 2>/dev/null || exit 0
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Archive CDC releases ($(date -u +%Y-%m-%d))"
+          git push
