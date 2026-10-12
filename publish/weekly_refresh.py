@@ -22,8 +22,8 @@ The data date in the tag is the newest source release actually used (CHANGELOG v
 the version part is build_obsawaredata.BUILD_VERSION (the build rules) unless --version is given. Every row's extract_timestamp is set to the as-of date. Nothing is
 committed, tagged, or uploaded: the script ends by printing those commands.
 
-CDC releases NHSN final and NWSS on Fridays and NSSP on Wednesdays, so a run on Saturday morning
-uses the default as-of date, the most recent Friday.
+CDC releases NHSN final and NWSS on Fridays and NSSP on Wednesdays, so a run over the weekend (the
+scheduled run is on Sunday) uses the default as-of date, the most recent Friday.
 
 Environment: OAD_DATA_ROOT (raw-data root holding "CDC Data/" and "Census Data/") and
 OAD_OUTPUT_ROOT (holding weekly_runs/, the ObsAwareData working tree, and

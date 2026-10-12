@@ -8,7 +8,7 @@ name: Weekly ObsAwareData refresh
 
 on:
   schedule:
-    - cron: "0 12 * * 6"  # Saturday 12:00 UTC; CDC's Friday releases are archived by then
+    - cron: "0 16 * * 0"  # Sunday 16:00 UTC; CDC's Friday releases are archived by then
   workflow_dispatch:
     inputs:
       as_of:

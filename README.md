@@ -11,7 +11,7 @@ archived releases into the published dataset (see [Pipeline](#pipeline)).
 CDC's [data.cdc.gov](https://data.cdc.gov) API serves only the current version of each dataset;
 every release replaces the previous one. ObsAwareData publishes how values were revised over time,
 so each release has to be saved before the next one replaces it.
-[`archive/archive_cdc.py`](archive/archive_cdc.py) runs once a day and saves every new release of:
+[`archive/archive_cdc.py`](archive/archive_cdc.py) runs every day except Sunday and saves every new release of:
 
 | Stream | Channel | Dataset | data.cdc.gov id |
 |---|---|---|---|

@@ -2,7 +2,7 @@ name: Archive CDC releases
 
 on:
   schedule:
-    - cron: "0 22 * * *"  # daily, after CDC's usual release times (Wed/Fri, about 10:00-16:00 US Eastern)
+    - cron: "0 22 * * 1-6"  # Monday-Saturday, after CDC's usual release times (Wed/Fri, about 10:00-16:00 US Eastern)
   workflow_dispatch:
 
 permissions:
