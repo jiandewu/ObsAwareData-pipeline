@@ -1,0 +1,47 @@
+name: Publish an ObsAwareData release
+
+# Run by hand after the refresh pull request (with any documentation edits) is merged: checks that
+# the data repository's main branch holds the reviewed data, then publishes the draft release on it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.2.0+2026-10-16"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  DATA_REPO: DMA-PRIME/ObsAwareData
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the data repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DATA_REPO }}
+          token: ${{ secrets.OBSAWAREDATA_TOKEN }}
+          fetch-depth: 0
+
+      - name: Check that main holds the refresh branch's data
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch -q origin "refresh/$TAG"
+          if ! git diff --quiet "origin/refresh/$TAG" origin/main -- data metadata; then
+            echo "::error::main differs from refresh/$TAG in data/ or metadata/; merge the pull request first"
+            git diff --stat "origin/refresh/$TAG" origin/main -- data metadata
+            exit 1
+          fi
+
+      - name: Publish the draft release on main
+        env:
+          GH_TOKEN: ${{ secrets.OBSAWAREDATA_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release edit "$TAG" --repo "$DATA_REPO" --target main --draft=false --latest
+          gh release view "$TAG" --repo "$DATA_REPO" --json tagName,url,assets --jq '"\(.url) (\(.assets | length) assets)"'

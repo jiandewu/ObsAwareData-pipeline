@@ -3,9 +3,12 @@
 __pycache__/
 *.pyc
 archive_work/
+archive_cache/
+# refresh workflow working folders
+data/
+out/
+cache/
+refresh.log
 
-# Not yet published: the ETL and build code are added once cleaned for publication.
-etl/
-release/
-reference/
-requirements.txt
+# local working notes
+processing/README_local.md

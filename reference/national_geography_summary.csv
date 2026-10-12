@@ -1,0 +1,54 @@
+state,nssp_hsa_count,nwss_site_count,nwss_multi_county_site_count,county_naming_suffixes,clean_partition_pass,counties_tagged_to_multiple_hsas,multi_hsa_site_resolution_pass,unresolved_multi_county_sites
+Alabama,20,22,0,County,True,0,True,0
+Alaska,4,5,0,Borough; Census Area; Municipality,True,0,True,0
+Arizona,6,22,0,County,True,0,True,0
+Arkansas,22,21,0,County,True,0,True,0
+California,30,105,7,County,True,0,False,4
+Colorado,17,67,3,County,True,0,False,2
+Connecticut,4,17,0,(no recognized suffix),True,0,True,0
+Delaware,2,9,0,County,True,0,True,0
+District of Columbia,1,1,1,(no recognized suffix),True,0,False,1
+Florida,17,27,2,County,True,0,True,0
+Georgia,42,30,2,County,True,0,False,1
+Guam,0,5,0,(no county rows found),True,0,True,0
+Hawaii,3,11,0,County,True,0,True,0
+Idaho,12,21,0,County,True,0,True,0
+Illinois,35,89,0,County,True,0,True,0
+Indiana,29,35,0,County,True,0,True,0
+Iowa,34,18,1,County,True,0,False,1
+Kansas,37,15,0,County,True,0,True,0
+Kentucky,31,33,0,County,True,0,True,0
+Louisiana,17,59,0,Parish,True,0,True,0
+Maine,6,30,0,County,True,0,True,0
+Maryland,9,15,0,County; city,True,0,True,0
+Massachusetts,6,11,3,County,True,0,False,1
+Michigan,25,71,3,County,True,0,True,0
+Minnesota,26,38,10,County,True,0,False,7
+Mississippi,25,4,0,County,True,0,True,0
+Missouri,27,79,20,County; city,True,0,False,8
+Montana,16,9,0,County,True,0,True,0
+Nebraska,25,21,2,County,True,0,True,0
+Nevada,4,10,0,(no recognized suffix); County,True,0,True,0
+New Hampshire,6,20,1,County,True,0,False,1
+New Jersey,9,27,3,County,True,0,False,1
+New Mexico,13,14,1,County,True,0,True,0
+New York,21,173,2,County,True,0,True,0
+North Carolina,32,52,8,County,True,0,False,4
+North Dakota,13,2,0,County,True,0,True,0
+Ohio,28,76,1,County,True,0,True,0
+Oklahoma,26,21,0,County,True,0,True,0
+Oregon,14,38,3,County,True,0,True,0
+Pennsylvania,26,49,4,County,True,0,False,2
+Rhode Island,2,13,2,County,True,0,False,1
+South Carolina,14,31,4,County,True,0,False,1
+South Dakota,15,6,1,County,True,0,True,0
+Tennessee,28,10,3,County,True,0,False,2
+Texas,61,123,7,County,True,0,True,0
+U.S. Virgin Islands,0,2,0,(no county rows found),True,0,True,0
+Utah,10,34,4,County,True,0,False,2
+Vermont,7,11,0,County,True,0,True,0
+Virginia,23,48,25,County; city,True,0,False,8
+Washington,15,32,4,County,True,0,False,1
+West Virginia,16,35,1,County,True,0,True,0
+Wisconsin,25,54,12,County,True,0,False,6
+Wyoming,13,7,0,County,True,0,True,0

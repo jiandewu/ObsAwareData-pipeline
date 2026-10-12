@@ -1,0 +1,136 @@
+name: Weekly ObsAwareData refresh
+
+# Rebuilds ObsAwareData from the archive as of the most recent Friday and proposes the result for
+# review: a pull request on the data repository (body: the change summary) and a draft release with
+# the revision-history assets. Nothing is published here; see publish.yml.
+# Secrets: OBSAWAREDATA_TOKEN (contents and pull requests read/write on the data repository) and
+# CENSUS_API_KEY.
+
+on:
+  schedule:
+    - cron: "0 12 * * 6"  # Saturday 12:00 UTC; CDC's Friday releases are archived by then
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "As-of date (YYYY-MM-DD); default: the most recent Friday"
+        required: false
+      skip_checks:
+        description: "Run even if the pre-run checks fail"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+env:
+  DATA_REPO: DMA-PRIME/ObsAwareData
+  OAD_DATA_ROOT: ${{ github.workspace }}/data
+  OAD_OUTPUT_ROOT: ${{ github.workspace }}/out
+  AS_OF: ${{ inputs.as_of }}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Free disk space  # the raw files and intermediate outputs need ~20 GB
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Check out the data repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DATA_REPO }}
+          token: ${{ secrets.OBSAWAREDATA_TOKEN }}
+          path: out/ObsAwareData
+          fetch-depth: 0  # tags: the pre-run checks compare with the latest release
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Cache archived CDC files
+        uses: actions/cache@v4
+        with:
+          path: cache/archive
+          key: archive-${{ hashFiles('archive/registry.csv') }}
+          restore-keys: archive-
+
+      - name: Cache Census inputs
+        uses: actions/cache@v4
+        with:
+          path: data/Census Data
+          key: census-${{ hashFiles('tools/fetch_census.py') }}
+
+      - name: Cache snapshot registries  # reuses file profiles, so only new files are read
+        uses: actions/cache@v4
+        with:
+          path: out/weekly_runs/registry
+          key: registry-${{ github.run_id }}
+          restore-keys: registry-
+
+      - name: Census inputs
+        run: python tools/fetch_census.py --data-root data
+
+      - name: Raw CDC files from the archive
+        run: python archive/materialize.py --out data --cache cache/archive ${AS_OF:+--as-of "$AS_OF"}
+
+      - name: Refresh
+        id: refresh
+        env:
+          CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}
+          SKIP: ${{ inputs.skip_checks && '1' || '' }}
+        run: |
+          set +e
+          python publish/weekly_refresh.py --workers 4 ${AS_OF:+--as-of "$AS_OF"} ${SKIP:+--skip-checks} 2>&1 | tee refresh.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "tag=$(grep -oP '^release tag: \K\S+' refresh.log | tail -1)" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 2 ]; then
+            cat out/weekly_runs/*/not_run.md >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Pre-run checks stopped the refresh (see the summary)"
+          fi
+          exit "$code"
+
+      - name: Open a pull request and a draft release
+        env:
+          GH_TOKEN: ${{ secrets.OBSAWAREDATA_TOKEN }}
+          TAG: ${{ steps.refresh.outputs.tag }}
+        run: |
+          summary=$(ls -td out/weekly_runs/*/change_summary.md | head -1)
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          cd out/ObsAwareData
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          branch="refresh/$TAG"
+          git switch -c "$branch"
+          git add -A
+          git commit -q -m "Data refresh $TAG"
+          git push -q origin "$branch"
+          gh pr create --repo "$DATA_REPO" --base main --head "$branch" --title "Data refresh $TAG" \
+            --body-file "$GITHUB_WORKSPACE/$summary"
+          gh release create "$TAG" --repo "$DATA_REPO" --draft --target "$branch" --title "$TAG" \
+            --notes-file "$GITHUB_WORKSPACE/$summary" "$OAD_OUTPUT_ROOT/ObsAwareData_release_assets/$TAG"/*
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-logs
+          path: |
+            refresh.log
+            out/weekly_runs/logs/
+            out/weekly_runs/*/change_summary.*
+            out/weekly_runs/*/not_run.md
+            out/weekly_runs/*/*.log
+          if-no-files-found: ignore
