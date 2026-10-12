@@ -35,16 +35,28 @@ the download.
 | Column | Meaning |
 |---|---|
 | `stream_id`, `release_channel`, `dataset_id` | Which dataset (see the table above) |
-| `rows_updated_at` | CDC release time (`rowsUpdatedAt`, UTC) |
+| `rows_updated_at` | CDC release time (`rowsUpdatedAt`, UTC); blank for `box_archive` files |
 | `as_of_date` | Release date in US Eastern time |
-| `retrieved_at` | When the file was downloaded (UTC) |
+| `retrieved_at` | When the file was downloaded (UTC; for `box_archive`, the saved file's modification time) |
 | `release_tag`, `file`, `metadata_file` | Where the file is: `https://github.com/<this repository>/releases/download/<release_tag>/<file>` |
 | `raw_bytes`, `raw_sha256` | Size and SHA-256 of the CSV as downloaded (after decompression) |
 | `xz_bytes`, `xz_sha256` | Size and SHA-256 of the stored `.xz` file |
 | `row_count`, `column_count` | CSV records (excluding the header) and columns |
-| `source` | `cdc_api` for files archived by this workflow |
+| `source` | `cdc_api` for files archived by this workflow; `box_archive` for earlier releases (below) |
+| `original_filename` | For `box_archive` files, the dated file name they were saved under |
 
 To use a file: download it, check `xz_sha256`, decompress (`xz -d`), and check `raw_sha256`.
+
+### Releases before the API archive
+
+Releases from April 2025 to early October 2026 were saved at the time by a separate download
+process as dated CSV files; [`archive/seed_from_box.py`](archive/seed_from_box.py) added them here
+once, unchanged and checked against the SHA-256 recorded when they were saved. Their dates come
+from the file names (the day the release was downloaded), and they carry no `rows_updated_at` or
+metadata file. Each release is archived once: where both copies existed, the API copy is kept.
+Those earlier files were exported in a different CSV style (every field quoted, thousands
+separators in numbers) and, for some NHSN values ending in .5, rounded half up where the API export
+rounds half to even; the values are otherwise the same.
 
 ## Data and license
 

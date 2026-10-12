@@ -48,7 +48,7 @@ DATASETS = [
 ]
 FIELDS = ["stream_id", "release_channel", "dataset_id", "rows_updated_at", "as_of_date", "retrieved_at",
           "release_tag", "file", "metadata_file", "raw_bytes", "raw_sha256", "xz_bytes", "xz_sha256",
-          "row_count", "column_count", "source"]
+          "row_count", "column_count", "source", "original_filename"]
 RETRIES = 8  # data.cdc.gov intermittently serves a certificate for another host
 RETRY_WAIT = 60  # seconds before retry n: RETRY_WAIT * n
 
@@ -88,6 +88,16 @@ def read_registry(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def write_registry(path: Path, rows: list[dict]) -> None:
+    """Write registry rows sorted by release date, stream, and channel (columns added later are blank)."""
+    rows = sorted(rows, key=lambda r: (r["as_of_date"], r["rows_updated_at"], r["stream_id"], r["release_channel"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS, restval="", lineterminator="\n")
+        w.writeheader()
+        w.writerows(rows)
+
+
 def gh(*args: str) -> subprocess.CompletedProcess:
     repo = os.environ.get("GITHUB_REPOSITORY")
     cmd = ["gh", *args] + (["--repo", repo] if repo else [])
@@ -96,8 +106,8 @@ def gh(*args: str) -> subprocess.CompletedProcess:
 
 def upload(tag: str, files: list[Path]) -> None:
     if gh("release", "view", tag).returncode != 0:
-        notes = ("Unmodified CDC data.cdc.gov exports released in the week ending " + tag[4:] +
-                 " (US Eastern), xz-compressed, with each dataset's metadata. See archive/registry.csv.")
+        notes = ("Unmodified CDC data.cdc.gov releases from the week ending " + tag[4:] +
+                 " (US Eastern), xz-compressed. See archive/registry.csv for each file's source and checksums.")
         p = gh("release", "create", tag, "--title", tag, "--notes", notes, "--latest=false")
         if p.returncode != 0:
             raise SystemExit(f"gh release create {tag} failed: {p.stderr.strip()}")
@@ -148,7 +158,7 @@ def archive_one(stream: str, channel: str, ds: str, newest: datetime | None, wor
            "retrieved_at": retrieved.strftime("%Y-%m-%dT%H:%M:%SZ"), "release_tag": tag, "file": name,
            "metadata_file": meta_name, "raw_bytes": len(raw), "raw_sha256": hashlib.sha256(raw).hexdigest(),
            "xz_bytes": len(xz), "xz_sha256": hashlib.sha256(xz).hexdigest(), "row_count": rows,
-           "column_count": cols, "source": "cdc_api"}
+           "column_count": cols, "source": "cdc_api", "original_filename": ""}
     print(f"  {rows:,} rows x {cols} columns, {len(raw) / 1e6:.1f} MB -> {len(xz) / 1e6:.1f} MB xz; {tag}/{name}",
           flush=True)
     if not dry_run:
@@ -166,7 +176,7 @@ def main() -> None:
     new_rows, failed = [], []
     for stream, channel, ds in DATASETS:
         times = [datetime.fromisoformat(r["rows_updated_at"].replace("Z", "+00:00"))
-                 for r in registry if r["dataset_id"] == ds]
+                 for r in registry if r["dataset_id"] == ds and r["rows_updated_at"]]  # Box seeds have none
         try:
             row = archive_one(stream, channel, ds, max(times, default=None), args.work, args.dry_run)
         except (Exception, SystemExit) as e:  # noqa: BLE001 - one dataset's failure must not stop the others
@@ -176,12 +186,7 @@ def main() -> None:
         if row:
             new_rows.append(row)
     if new_rows and not args.dry_run:
-        rows = sorted(registry + new_rows, key=lambda r: (r["rows_updated_at"], r["dataset_id"]))
-        args.registry.parent.mkdir(parents=True, exist_ok=True)
-        with args.registry.open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=FIELDS, lineterminator="\n")
-            w.writeheader()
-            w.writerows(rows)
+        write_registry(args.registry, registry + new_rows)
     print(f"archived {len(new_rows)} new release(s)" + (" (dry run)" if args.dry_run else "")
           + (f"; FAILED: {', '.join(failed)}" if failed else ""), flush=True)
     sys.exit(1 if failed else 0)
