@@ -49,7 +49,8 @@ DATASETS = [
 FIELDS = ["stream_id", "release_channel", "dataset_id", "rows_updated_at", "as_of_date", "retrieved_at",
           "release_tag", "file", "metadata_file", "raw_bytes", "raw_sha256", "xz_bytes", "xz_sha256",
           "row_count", "column_count", "source"]
-RETRIES = 5
+RETRIES = 8  # data.cdc.gov intermittently serves a certificate for another host
+RETRY_WAIT = 60  # seconds before retry n: RETRY_WAIT * n
 
 
 def get(url: str, timeout: int = 120) -> bytes:
@@ -61,7 +62,7 @@ def get(url: str, timeout: int = 120) -> bytes:
             if attempt == RETRIES:
                 raise
             print(f"  retry {attempt}/{RETRIES - 1} after error: {e}", flush=True)
-            time.sleep(30 * attempt)
+            time.sleep(RETRY_WAIT * attempt)
     raise AssertionError
 
 
