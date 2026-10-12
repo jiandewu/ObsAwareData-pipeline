@@ -59,21 +59,25 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Cache archived CDC files
-        uses: actions/cache@v4
+      # Caches are restored here and saved right after each download (the registries at the end,
+      # even after a failure), so a failed run still leaves them for the next one.
+      - name: Restore archived CDC files
+        id: archive-cache
+        uses: actions/cache/restore@v4
         with:
           path: cache/archive
           key: archive-${{ hashFiles('archive/registry.csv') }}
           restore-keys: archive-
 
-      - name: Cache Census inputs
-        uses: actions/cache@v4
+      - name: Restore Census inputs
+        id: census-cache
+        uses: actions/cache/restore@v4
         with:
           path: data/Census Data
           key: census-${{ hashFiles('tools/fetch_census.py') }}
 
-      - name: Cache snapshot registries  # reuses file profiles, so only new files are read
-        uses: actions/cache@v4
+      - name: Restore snapshot registries  # reuses file profiles, so only new files are read
+        uses: actions/cache/restore@v4
         with:
           path: out/weekly_runs/registry
           key: registry-${{ github.run_id }}
@@ -82,8 +86,22 @@ jobs:
       - name: Census inputs
         run: python tools/fetch_census.py --data-root data
 
+      - name: Save Census inputs
+        if: steps.census-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/Census Data
+          key: census-${{ hashFiles('tools/fetch_census.py') }}
+
       - name: Raw CDC files from the archive
         run: python archive/materialize.py --out data --cache cache/archive ${AS_OF:+--as-of "$AS_OF"}
+
+      - name: Save archived CDC files
+        if: steps.archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: cache/archive
+          key: archive-${{ hashFiles('archive/registry.csv') }}
 
       - name: Refresh
         id: refresh
@@ -121,6 +139,13 @@ jobs:
             --body-file "$GITHUB_WORKSPACE/$summary"
           gh release create "$TAG" --repo "$DATA_REPO" --draft --target "$branch" --title "$TAG" \
             --notes-file "$GITHUB_WORKSPACE/$summary" "$OAD_OUTPUT_ROOT/ObsAwareData_release_assets/$TAG"/*
+
+      - name: Save snapshot registries
+        if: always() && hashFiles('out/weekly_runs/registry/*.csv') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: out/weekly_runs/registry
+          key: registry-${{ github.run_id }}
 
       - name: Keep the logs
         if: always()
