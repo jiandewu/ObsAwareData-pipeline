@@ -14,7 +14,9 @@ Stages (run in order; --start-at resumes after a failure without redoing earlier
               revision history written to <assets-root>/<tag>/; every state's checks must pass
     summary   compare the rebuilt latest tables with the repository's HEAD and write
               <work-root>/<as-of>/change_summary.md (+ .csv)
-    cleanup   delete this run's intermediate work/ folder (~2.6 GB) and keep only the newest
+    docs      update_docs.py: refresh the dated facts in the repository's documentation, CHANGELOG
+              entry, and CITATION.cff (skipped with --states)
+    cleanup  delete this run's intermediate work/ folder (~2.6 GB) and keep only the newest
               --keep-weeks dated output folders (~4 GB each); the published tables and
               revision-history assets already carry the data history
 
@@ -250,10 +252,12 @@ def summary(args: argparse.Namespace, out: Path, tag: str) -> None:
           f"observation_state changed {tot('changed_flags')}. Per state: `change_summary.csv`.", "",
           f"Files changed in the working tree: {len(changed)}.", "",
           "## Warnings", "", *([f"- {w}" for w in warn] or ["None."]), "",
-          "## To publish (manual)", "",
-          f"1. Add a CHANGELOG entry `{tag[1:]}` (data refresh: source releases above) and update CITATION.cff.",
-          f"2. `git -C \"{args.repo}\" add -A && git commit -m \"Data refresh {tag[1:]}\" && git tag {tag}`",
-          f"3. Push, then `gh release create {tag}` with the assets in `{args.assets_root / tag}`."]
+          "## Before publishing", "",
+          "1. Review the data changes above and the documentation changes. Dates, counts, the CHANGELOG entry's "
+          "generated block, and CITATION.cff are filled in automatically; add any notable source changes "
+          f"(and, for a new version, the rule changes) to the CHANGELOG entry `{tag[1:]}`.",
+          f"2. Merge the changes into main, then publish the draft release `{tag}` (assets in "
+          f"`{args.assets_root / tag}`)."]
     (out / "change_summary.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
     print("\n".join(md).encode("ascii", "replace").decode())
 
@@ -287,6 +291,10 @@ def main() -> None:
     if "build" in todo:
         build(args, out, tag)
     summary(args, out, tag)
+    if not args.states:  # a subset build leaves the national metadata, so the docs' facts, unchanged
+        run(["update_docs.py", "--repo", args.repo, "--tag", tag, "--as-of", args.as_of.isoformat(),
+             "--archive-registry", HERE.parent / "archive" / "registry.csv",
+             "--change-summary", out / "change_summary.csv"], HERE, out / "update_docs.log")
     cleanup(args.work_root, out, args.keep_weeks)
 
 
