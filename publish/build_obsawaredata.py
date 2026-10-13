@@ -6,6 +6,12 @@ every wide table against the long table, and writes national summary tables plus
 manifest. With --extract-timestamp, the long table's `extract_timestamp` column is set to that
 value (the refresh's as-of date) instead of the processing run time.
 
+The latest-value long table is published as one file per observation year
+(<st>_long_latest_<year>.csv, by the year of `observation_week`), so no file grows past GitHub's
+size limits. Published long tables carry no `source_file_hash` column: each source snapshot's
+SHA-256, and with --archive-registry its file in the archive of CDC releases, is listed once in
+metadata/source_snapshots.csv.
+
 Revision history (all-versions table, one row per value and source snapshot) is published only as
 GitHub Release assets (--assets-dir <assets root>/<tag>), gzipped deterministically, never in git.
 Each state's history is a chain listed in metadata/release_assets.csv: one `full` file, then one
@@ -15,7 +21,7 @@ In revision history, `extract_timestamp` is the as-of date of the release that f
 the row's snapshot, so published rows never change. A state gets a new `full` file instead of an
 increment when the build rules changed (BUILD_VERSION), when any already-published snapshot's rows
 differ in the new processing output (compared by per-snapshot row count and row-hash sum, excluding
-`extract_timestamp`), when its last full file is REBASE_DAYS or more older than this release, when
+`extract_timestamp` and `source_file_hash`), when its last full file is REBASE_DAYS or more older than this release, when
 it has no published history, or with --full. Earlier chain files are read from
 <assets root>/<their tag>/ and downloaded from their release URL when missing.
 
@@ -24,7 +30,8 @@ The processing scripts (../processing/) produce the per-state tables; this scrip
 Usage:
     python build_obsawaredata.py --by-state <processing by_state dir> --sc-dir <by_state/SC>
         --repo <ObsAwareData dir> [--states CA TX] [--no-copy]
-        [--assets-dir <assets root>/<tag> --release-tag v1.2.0+2026-10-09 --extract-timestamp 2026-10-09 [--full]]
+        [--assets-dir <assets root>/<tag> --release-tag v1.0.0+2026-10-16 --extract-timestamp 2026-10-16 [--full]]
+        [--archive-registry <archive/registry.csv> --archive-repo <owner>/<name>]
 """
 from __future__ import annotations
 
@@ -33,7 +40,6 @@ import gzip
 import hashlib
 import re
 import shutil
-import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
@@ -41,9 +47,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# source suffix (after {st}_) -> public suffix (after {st}_)
+# source suffix (after {st}_) -> public suffix (after {st}_); the latest view is split by year (split_latest)
 FILE_MAP = {
-    "latest_view.csv": "long_latest.csv",
     "nhsn_wide.csv": "nhsn_wide.csv",
     "nssp_wide.csv": "nssp_wide.csv",
     "nwss_wide.csv": "nwss_wide.csv",
@@ -53,15 +58,16 @@ FILE_MAP = {
 RELEASE_BASE_URL = "https://github.com/DMA-PRIME/ObsAwareData/releases/download"
 # Version of the build rules (the <version> in tag v<version>+<data date>; see the repo CHANGELOG).
 # Bump it here, together with a CHANGELOG entry, whenever this script or the processing rules change.
-# 1.2.0: extract_timestamp = the as-of date (revision history: of the snapshot's first release);
-# revision history as full + weekly increment release assets, none in the repository.
-BUILD_VERSION = "1.2.0"
+BUILD_VERSION = "1.0.0"
 REBASE_DAYS = 365  # a state's chain restarts with a full file at least this often
 ASSET_FIELDS = ["tag", "version", "state", "file", "kind", "as_of", "snapshots", "rows", "bytes", "sha256", "url"]
+SNAPSHOT_FIELDS = ["source_snapshot_id", "stream_id", "release_channel", "as_of_date", "source_file_hash", "archive_url"]
+HASH_COL = b"source_file_hash"  # last column of the processing long tables; never published in them
+LATEST_FILE = re.compile(r"_long_latest_(\d{4})\.csv$")
 CHUNK_ROWS = 1_000_000
-# extract_timestamp is the 4th field; the three before it (stream, snapshot id, date) never hold a
-# comma or quote, so it can be replaced line by line without parsing the CSV.
-STAMP_FIELD = re.compile(rb'^((?:[^,"\r\n]*,){3})[^,\r\n]*')
+# In the processing long tables the first five fields (stream, snapshot id, as-of date, extract_timestamp,
+# observation_week) and the last (source_file_hash) never hold a comma or quote, so they are read and
+# replaced line by line without parsing the CSV.
 WIDE_KEY_COLS = ["analysis_region", "analysis_region_type", "analysis_region_id",
                  "raw_geography_type", "raw_geography_id", "observation_week"]
 LONG_KEY = ["stream_id", "observation_week", "analysis_region_type", "analysis_region_id", "pathogen", "feature_name"]
@@ -85,7 +91,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--extract-timestamp", help="The release's as-of date, used as extract_timestamp "
                    "(default: keep the processing step's; required with --assets-dir)")
     p.add_argument("--full", action="store_true", help="Publish a full revision-history file for every state")
+    p.add_argument("--archive-registry", type=Path,
+                   help="archive/registry.csv: link each source snapshot to its archived file")
+    p.add_argument("--archive-repo", help="<owner>/<name> holding the archive (required with --archive-registry)")
     args = p.parse_args()
+    if args.archive_registry and not args.archive_repo:
+        p.error("--archive-repo is required with --archive-registry")
     if args.assets_dir and not (args.release_tag and args.extract_timestamp):
         p.error("--release-tag and --extract-timestamp are required with --assets-dir")
     return args
@@ -106,17 +117,50 @@ def norm(v: str) -> str:
         return v
 
 
-def copy_lines(fin, fout, stamp: str | None) -> None:
-    """Copy a canonical-field CSV, replacing every row's extract_timestamp with `stamp` if given."""
-    if stamp is None:
-        shutil.copyfileobj(fin, fout, length=16 * 1024 * 1024)
-        return
-    header = fin.readline()
-    if header.split(b",")[3] != b"extract_timestamp":
-        raise ValueError("extract_timestamp is not the 4th column")
-    fout.write(header)
-    repl = rb"\g<1>" + stamp.encode()
-    fout.writelines(STAMP_FIELD.sub(repl, line, count=1) for line in fin)
+def drop_last_field(line: bytes) -> bytes:
+    """A CSV line without its last field (source_file_hash), keeping its line ending."""
+    end = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+    return line[:line.rindex(b",")] + end
+
+
+def check_long_header(header: bytes, src: Path) -> None:
+    cols = header.rstrip(b"\r\n").split(b",")
+    if cols[:5] != [b"stream_id", b"source_snapshot_id", b"as_of_date", b"extract_timestamp",
+                    b"observation_week"] or cols[-1] != HASH_COL:
+        raise ValueError(f"{src}: unexpected long-table columns")
+
+
+def split_latest(src: Path, out_dir: Path, lo: str, stamp: str | None) -> dict[str, dict]:
+    """Write the latest view as <lo>_long_latest_<year>.csv (by the year of observation_week), without
+    source_file_hash and with every extract_timestamp set to `stamp` if given. Returns each source
+    snapshot's stream, as-of date, and file hash."""
+    files, snaps = {}, {}
+    try:
+        with open(src, "rb") as fin:
+            header = fin.readline()
+            check_long_header(header, src)
+            header = drop_last_field(header)
+            for line in fin:
+                f = line.split(b",", 5)
+                if f[1] not in snaps:
+                    snaps[f[1]] = {"stream_id": f[0].decode(), "as_of_date": f[2].decode(),
+                                   "source_file_hash": line.rstrip(b"\r\n").rsplit(b",", 1)[1].decode()}
+                if stamp is not None:
+                    f[3] = stamp.encode()
+                year = f[4][:4].decode()
+                if year not in files:
+                    files[year] = open(out_dir / f"{lo}_long_latest_{year}.csv", "wb")
+                    files[year].write(header)
+                files[year].write(drop_last_field(b",".join(f)))
+    finally:
+        for fh in files.values():
+            fh.close()
+    return {k.decode(): v for k, v in snaps.items()}
+
+
+def latest_files(out_dir: Path, lo: str) -> list[Path]:
+    """A state's published latest-value files, in year order."""
+    return sorted(p for p in out_dir.glob(f"{lo}_long_latest_*.csv") if LATEST_FILE.search(p.name))
 
 
 def sha256(path: Path) -> str:
@@ -129,22 +173,22 @@ def sha256(path: Path) -> str:
 
 def write_revision_file(src: Path, dst: Path, stamps: dict[bytes, bytes]) -> tuple[int, int]:
     """Gzip (no embedded name or timestamp) the rows of the snapshots in `stamps`
-    (source_snapshot_id -> extract_timestamp) from an all-versions table; return (snapshots, rows)."""
+    (source_snapshot_id -> extract_timestamp) from an all-versions table, without source_file_hash;
+    return (snapshots, rows)."""
     rows, seen = 0, set()
     opener = gzip.open if src.suffix == ".gz" else open
     with opener(src, "rb") as fin, open(dst, "wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as fout:
             header = fin.readline()
-            if header.split(b",")[:4] != [b"stream_id", b"source_snapshot_id", b"as_of_date", b"extract_timestamp"]:
-                raise ValueError(f"{src}: unexpected all-versions columns")
-            fout.write(header)
-            for line in fin:  # the first 4 fields never hold a comma or quote (see STAMP_FIELD)
+            check_long_header(header, src)
+            fout.write(drop_last_field(header))
+            for line in fin:
                 f = line.split(b",", 4)
                 stamp = stamps.get(f[1])
                 if stamp is None:
                     continue
                 f[3] = stamp
-                fout.write(b",".join(f))
+                fout.write(drop_last_field(b",".join(f)))
                 rows += 1
                 seen.add(f[1])
     return len(seen), rows
@@ -152,18 +196,24 @@ def write_revision_file(src: Path, dst: Path, stamps: dict[bytes, bytes]) -> tup
 
 def snapshot_digest(paths: list[Path]) -> dict[str, dict]:
     """Per source snapshot in all-versions tables: row count, order-independent sum (mod 2**64) of
-    row hashes over every column except extract_timestamp, and its extract_timestamp."""
+    row hashes over every column except extract_timestamp and source_file_hash (published files
+    have no source_file_hash), its extract_timestamp, and its stream, as-of date, and file hash."""
     out: dict[str, dict] = {}
+    hash_col = HASH_COL.decode()
     for path in paths:
         for chunk in pd.read_csv(path, dtype=str, keep_default_na=False, chunksize=CHUNK_ROWS):
-            h = pd.util.hash_pandas_object(chunk.drop(columns="extract_timestamp"), index=False).to_numpy()
+            h = pd.util.hash_pandas_object(chunk.drop(columns=["extract_timestamp", hash_col], errors="ignore"),
+                                           index=False).to_numpy()
             codes, snaps = pd.factorize(chunk.source_snapshot_id)
             sums = np.zeros(len(snaps), dtype=np.uint64)
             np.add.at(sums, codes, h)  # wraps mod 2**64
             counts = np.bincount(codes, minlength=len(snaps))
-            stamp = dict(zip(chunk.source_snapshot_id, chunk.extract_timestamp))
+            first = chunk.drop_duplicates("source_snapshot_id").set_index("source_snapshot_id")
             for s, n, hs in zip(snaps, counts, sums):
-                d = out.setdefault(s, {"rows": 0, "hsum": 0, "stamp": stamp[s]})
+                r = first.loc[s]
+                d = out.setdefault(s, {"rows": 0, "hsum": 0, "stamp": r.extract_timestamp, "info": {
+                    "stream_id": r.stream_id, "as_of_date": r.as_of_date,
+                    "source_file_hash": r[hash_col] if hash_col in first.columns else ""}})
                 d["rows"] += int(n)
                 d["hsum"] = (d["hsum"] + int(hs)) % 2**64
     return out
@@ -171,16 +221,12 @@ def snapshot_digest(paths: list[Path]) -> dict[str, dict]:
 
 def read_chains(repo: Path) -> dict[str, list[dict]]:
     """Each state's published revision-history chain, in order, from the repo's current
-    metadata/release_assets.csv (1.1.0 listed one full file per state, without tag or kind)."""
+    metadata/release_assets.csv."""
     path = repo / "metadata" / "release_assets.csv"
     chains: dict[str, list[dict]] = {}
     if not path.exists():
         return chains
     for r in read_str(path).to_dict("records"):
-        if "tag" not in r:
-            tag = urllib.parse.unquote(r["url"].split("/")[-2])
-            r.update(tag=tag, version=tag[1:].split("+")[0], kind="full", as_of=tag.split("+")[1],
-                      snapshots="", rows="")
         chains.setdefault(r["state"], []).append({k: r[k] for k in ASSET_FIELDS})
     return chains
 
@@ -199,13 +245,15 @@ def chain_paths(chain: list[dict], assets_root: Path) -> list[Path]:
     return paths
 
 
-def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict], list[Path], str]:
+def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict], list[Path], str, dict]:
     """Write a state's revision-history asset for this release (a full file or an increment) into
-    rev['dir']; return its new chain, the local files of its complete history in chain order, and
-    why a full file was written ('' for an increment or no new snapshot)."""
+    rev['dir']; return its new chain, the local files of its complete history in chain order,
+    why a full file was written ('' for an increment or no new snapshot), and each source snapshot's
+    stream, as-of date, and file hash."""
     lo, stamp, chain = st.lower(), rev["stamp"], rev["chain"]
     src = av_src if av_src.exists() else Path(str(av_src) + ".gz")
     new = snapshot_digest([src])
+    info = {s: d["info"] for s, d in new.items()}
     old, paths, changed = {}, [], []
     if chain and chain[0]["version"] == BUILD_VERSION:
         paths = chain_paths(chain, rev["dir"].parent)
@@ -231,7 +279,7 @@ def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict],
         kind, name = "increment", f"{lo}_long_all_versions_added_{stamp}.csv.gz"
         stamps = {s.encode(): stamp.encode() for s in new if s not in old}
         if not stamps:
-            return chain, paths, ""
+            return chain, paths, "", info
     rev["dir"].mkdir(parents=True, exist_ok=True)
     dst = rev["dir"] / name
     n_snap, n_rows = write_revision_file(src, dst, stamps)
@@ -239,8 +287,8 @@ def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict],
            "snapshots": n_snap, "rows": n_rows, "bytes": dst.stat().st_size, "sha256": sha256(dst),
            "url": f"{RELEASE_BASE_URL}/{rev['tag'].replace('+', '%2B')}/{name}"}
     if kind == "full":
-        return [row], [dst], reason
-    return chain + [row], paths + [dst], ""
+        return [row], [dst], reason, info
+    return chain + [row], paths + [dst], "", info
 
 
 def parse_thresholds(report_text: str) -> dict[str, str]:
@@ -368,24 +416,30 @@ def revision_history_stats(paths: list[Path], long: pd.DataFrame) -> dict:
 
 
 def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | None = None,
-                rev: dict | None = None) -> tuple[dict, dict, list[dict] | None, str]:
+                rev: dict | None = None) -> tuple[dict, dict, list[dict] | None, str, dict]:
     """Build one state's folder; with `rev` (assets dir, tag, stamp, chain, full), also its
-    revision-history asset. Returns the summary row, thresholds row, new chain, and full-file reason."""
+    revision-history asset. Returns the summary row, thresholds row, new chain, full-file reason, and
+    the source snapshots seen (id -> stream, as-of date, file hash)."""
     lo = st.lower()
     out_dir = repo / "data" / st
     out_dir.mkdir(parents=True, exist_ok=True)
     av_src = src_dir / f"{lo}_all_versions.csv"
+    source_snaps: dict[str, dict] = {}
     if copy:
         for s, d in FILE_MAP.items():
-            with open(src_dir / f"{lo}_{s}", "rb") as fin, open(out_dir / f"{lo}_{d}", "wb") as fout:
-                copy_lines(fin, fout, stamp if s == "latest_view.csv" else None)
-    (out_dir / f"{lo}_long_all_versions.csv.gz").unlink(missing_ok=True)  # release assets only since 1.2.0
+            shutil.copyfile(src_dir / f"{lo}_{s}", out_dir / f"{lo}_{d}")
+        for p in latest_files(out_dir, lo):  # last release's years
+            p.unlink()
+        source_snaps = split_latest(src_dir / f"{lo}_latest_view.csv", out_dir, lo, stamp)
     chain, av_paths, full_reason = None, [], ""
     if rev:
-        chain, av_paths, full_reason = build_revision_assets(st, av_src, rev)
+        chain, av_paths, full_reason, rev_snaps = build_revision_assets(st, av_src, rev)
+        source_snaps.update(rev_snaps)
 
     f = {k: out_dir / f"{lo}_{v}" for k, v in FILE_MAP.items()}
-    long = read_str(f["latest_view.csv"])
+    years = latest_files(out_dir, lo)
+    parts = [read_str(p) for p in years]
+    long = pd.concat(parts, ignore_index=True)
     wides = {s: read_str(f[f"{s}_wide.csv"]) for s in ("nhsn", "nssp", "nwss")}
     master = read_str(f["master_state_wide.csv"])
     census = read_str(f["census_context.csv"])
@@ -396,6 +450,11 @@ def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | Non
 
     # ---- checks
     checks = []
+    off_year = sum(int((d.observation_week.str[:4] != LATEST_FILE.search(p.name).group(1)).sum())
+                   for p, d in zip(years, parts))
+    checks.append((f"`{lo}_long_latest_<year>.csv`: each file holds only weeks ending in its year", off_year == 0,
+                   f"{len(years)} files ({', '.join(LATEST_FILE.search(p.name).group(1) for p in years)}); "
+                   f"{off_year} rows in the wrong file"))
     dup = int(long.duplicated(LONG_KEY).sum())
     checks.append(("Long table: one row per (source, week, region type, region, pathogen, measure)", dup == 0, f"{dup} duplicate keys"))
     for s, w in wides.items():
@@ -454,11 +513,11 @@ def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | Non
 
     # ---- files
     files = []
-    for k in FILE_MAP:
-        df = {"latest_view.csv": long, "master_state_wide.csv": master, "census_context.csv": census,
-              "nhsn_wide.csv": wides["nhsn"], "nssp_wide.csv": wides["nssp"], "nwss_wide.csv": wides["nwss"]}[k]
-        files.append({"File": f"`{f[k].name}`", "Rows": fmt_int(len(df)), "Columns": fmt_int(df.shape[1]),
-                      "Size (MB)": f"{f[k].stat().st_size / 1e6:.1f}"})
+    tables = {"master_state_wide.csv": master, "census_context.csv": census,
+              "nhsn_wide.csv": wides["nhsn"], "nssp_wide.csv": wides["nssp"], "nwss_wide.csv": wides["nwss"]}
+    for path, df in [*zip(years, parts), *((f[k], tables[k]) for k in FILE_MAP)]:
+        files.append({"File": f"`{path.name}`", "Rows": fmt_int(len(df)), "Columns": fmt_int(df.shape[1]),
+                      "Size (MB)": f"{path.stat().st_size / 1e6:.1f}"})
 
     # ---- revision history
     rev_md = ""
@@ -517,7 +576,7 @@ A week counts as "with data" when the primary measure (weekly admissions, ED vis
 
 ## Reliability flags
 
-Number of rows in `{lo}_long_latest.csv` by source, measure, and `observation_state` (see `DATA_DICTIONARY.md`).
+Number of rows in `{lo}_long_latest_<year>.csv` (all years) by source, measure, and `observation_state` (see `DATA_DICTIONARY.md`).
 
 {md_table(st_counts)}
 
@@ -540,24 +599,54 @@ Census margin-of-error variables carrying the Census Bureau's negative placehold
         summary[f"{s}_first_week"] = g.observation_week.min() if len(g) else ""
         summary[f"{s}_last_week"] = g.observation_week.max() if len(g) else ""
     summary.update({"long_latest_rows": len(long), "all_sources_wide_columns": master.shape[1],
-                    "revision_history_included": bool(av_paths),
-                    "revision_history_location": "release" if av_paths else "", "all_checks_passed": all_ok})
-    return summary, {"state": st, **thresholds}, chain, full_reason
+                    "all_checks_passed": all_ok})
+    return summary, {"state": st, **thresholds}, chain, full_reason, source_snaps
+
+
+def write_snapshots(path: Path, snaps: dict[str, dict], merge: bool, registry: Path | None,
+                    archive_repo: str | None) -> None:
+    """metadata/source_snapshots.csv: one row per source snapshot in the published tables and revision
+    history, with its file's SHA-256 and, with an archive registry, the URL of the archived file (matched
+    by stream, as-of date, and SHA-256). With `merge` (a subset build), rows of other snapshots are kept."""
+    rows = {}
+    if merge and path.exists():
+        rows = {r["source_snapshot_id"]: r for r in read_str(path).to_dict("records")}
+    archive = {}
+    if registry:
+        for r in read_str(registry).to_dict("records"):
+            archive.setdefault((r["stream_id"], r["as_of_date"], r["raw_sha256"].lower()), []).append(
+                f"https://github.com/{archive_repo}/releases/download/{r['release_tag']}/{r['file']}")
+    for sid, d in snaps.items():
+        parts = sid.split("_")
+        url = ""
+        if registry:
+            hits = archive.get((d["stream_id"], d["as_of_date"], d["source_file_hash"].lower()), [])
+            if len(hits) != 1:
+                raise SystemExit(f"{sid}: {len(hits)} archived files match (stream, as-of date, SHA-256)")
+            url = hits[0]
+        rows[sid] = {"source_snapshot_id": sid, "stream_id": d["stream_id"],
+                     "release_channel": parts[2] if len(parts) == 4 else "", "as_of_date": d["as_of_date"],
+                     "source_file_hash": d["source_file_hash"], "archive_url": url}
+    df = pd.DataFrame(rows.values(), columns=SNAPSHOT_FIELDS).sort_values(["stream_id", "as_of_date", "source_snapshot_id"])
+    df.to_csv(path, index=False, lineterminator="\n")
 
 
 def main() -> None:
     args = parse_args()
     states = args.states or sorted(p.name for p in args.by_state.iterdir() if p.is_dir())
     chains = read_chains(args.repo)  # before this build rewrites metadata/
-    summaries, thresholds = [], []
+    summaries, thresholds, snapshots = [], [], {}
     for st in states:
         src = args.sc_dir if st == "SC" else args.by_state / st
         rev = ({"dir": args.assets_dir, "tag": args.release_tag, "stamp": args.extract_timestamp,
                 "chain": chains.get(st, []), "full": args.full} if args.assets_dir else None)
-        s, t, chain, reason = build_state(st, src, args.repo, copy=not args.no_copy,
-                                          stamp=args.extract_timestamp, rev=rev)
+        s, t, chain, reason, snaps = build_state(st, src, args.repo, copy=not args.no_copy,
+                                                 stamp=args.extract_timestamp, rev=rev)
         summaries.append(s)
         thresholds.append(t)
+        for sid, d in snaps.items():
+            if snapshots.setdefault(sid, d) != d:
+                raise SystemExit(f"{st}: {sid} differs from another state's ({d} vs {snapshots[sid]})")
         note = ""
         if rev:
             last = chain[-1] if chain else None
@@ -569,6 +658,9 @@ def main() -> None:
 
     meta = args.repo / "metadata"
     meta.mkdir(exist_ok=True)
+    if snapshots:
+        write_snapshots(meta / "source_snapshots.csv", snapshots, merge=bool(args.states),
+                        registry=args.archive_registry, archive_repo=args.archive_repo)
     if not args.states:
         pd.DataFrame(summaries).to_csv(meta / "coverage_summary.csv", index=False, lineterminator="\n")
         pd.DataFrame(thresholds).to_csv(meta / "observation_state_thresholds.csv", index=False, lineterminator="\n")

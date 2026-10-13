@@ -9,7 +9,8 @@ Layout under --out-root:
 
 Source snapshots: every step reads the NHSN/NSSP and NWSS snapshot registries filtered to
 as_of_date <= --as-of (default: no filter). The single-snapshot inputs - the NSSP file for
-extract_nssp.py, the NWSS file for extract_nwss.py's coverage ratio and blended-source flags, and the NSSP coverage map - are
+extract_nssp.py, the NWSS file for extract_nwss.py (site details for the HSA and county tables; the NWSS
+flags are computed per snapshot in build_observation_tables.py), and the NSSP coverage map - are
 the newest on or before --as-of, by the registry's parsed release date (as_of_date), not by
 filename order: filename spellings differ across releases. Rerun the registries
 (register_nhsn_nssp_snapshots.py, register_nwss_snapshots.py) first to pick up new files.
@@ -157,8 +158,6 @@ def run_state(state: str, out_root: Path, thresholds: dict, national_geography_s
         ["build_observation_tables.py", "--data-root", DATA, "--nhsn-nssp-registry", inputs["nhsn_nssp_registry"], "--census-extract-dir", work / "census",
          "--hsa-facility-coverage-check", work / "nssp" / f"{lo}_hsa_facility_coverage_check.csv",
          "--nwss-registry", inputs["nwss_registry"],
-         "--nwss-coverage-gap-report", work / "nwss" / f"{lo}_nwss_coverage_gap_report.csv",
-         "--nwss-wide-extract", work / "nwss" / f"{lo}_nwss_extract_wide.csv",
          "--output-dir", final, "--point-in-time-cutoff", pit_cutoff, *st, *threshold_args(state, thresholds)],
         ["build_hsa_combined.py", "--latest-view", final / f"{lo}_latest_view.csv",
          "--nwss-wide-extract", work / "nwss" / f"{lo}_nwss_extract_wide.csv", "--output-dir", final, *st],

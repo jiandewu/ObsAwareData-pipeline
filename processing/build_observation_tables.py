@@ -55,8 +55,13 @@ NSSP_ANOMALY_RELATIVE_CHANGE = 0.35
 # on the corrected ratio, 2026-08-28 NWSS release; ties at the cutoff make the realized SC shares
 # 22.6%/14.3%/11.5%.
 NWSS_LOW_COVERAGE_THRESHOLD = {"covid": 0.75, "influenza": 0.76, "rsv": 0.76}
-NWSS_ANOMALY_TIER_JUMP = 2  # >=2-tier Site_WVAL_Category jump, not a percent-change rule
+# >=3-tier Site_WVAL_Category jump, not a percent-change rule. A 2-tier threshold flagged about 14% of
+# site-weeks nationally (2026-10-09 release), mostly ordinary swings and real season onsets; 3 tiers flags about 5%.
+NWSS_ANOMALY_TIER_JUMP = 3
 NWSS_CATEGORY_ORDER = {"Very Low": 0, "Low": 1, "Moderate": 2, "High": 3, "Very High": 4}
+# (source_snapshot_id, site, pathogen, week) of every blended-source week, filled per snapshot by
+# ingest_nwss_snapshot; only the run report's counts read it
+NWSS_SOURCE_BLEND_KEYS: set[tuple[str, str, str, str]] = set()
 # NSSP participation: NSSP publishes no visit-count denominator, so its own ed_trend_category
 # low-coverage proxy (above) is kept as-is. This adds an independent, CDC-sourced structural
 # signal instead: check_nssp_facility_coverage.py's per-HSA facility-participation check
@@ -100,14 +105,6 @@ def parse_args() -> argparse.Namespace:
         "--nwss-registry", required=True, type=Path,
         help="nwss_outputs/nwss_snapshot_registry.csv (from register_nwss_snapshots.py), "
              "listing every dated NWSS snapshot to ingest per-snapshot, same as NHSN/NSSP.",
-    )
-    parser.add_argument(
-        "--nwss-coverage-gap-report", required=True, type=Path,
-        help="nwss_outputs/sc_nwss_coverage_gap_report.csv, used for the v1 NWSS participation_status rule.",
-    )
-    parser.add_argument(
-        "--nwss-wide-extract", required=True, type=Path,
-        help="nwss_outputs/sc_nwss_extract_wide.csv, used for the v1 NWSS source-blend anomaly rule.",
     )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
@@ -460,7 +457,10 @@ def ingest_nwss_snapshot(record: dict[str, str], data_root: Path, extract_timest
     extract_nwss.py's own read/filter/extract functions unchanged and applying the same
     canonicalization mapping validate_weekly_schema.py uses for a single snapshot (present-
     nonzero -> observed_valid, present-zero -> observed_zero, null ->
-    incidental_missing), generalized here across every registered snapshot.
+    incidental_missing), generalized here across every registered snapshot. The
+    participation_status and anomaly rules (annotate_nwss) use only this snapshot's own data:
+    its per-site coverage ratios and blended-source weeks, so a published snapshot's rows do
+    not change when later snapshots arrive.
     """
     path = data_root / record["source_relative_path"]
     raw_rows = nwss_mod.read_rows(path)
@@ -498,7 +498,12 @@ def ingest_nwss_snapshot(record: dict[str, str], data_root: Path, extract_timest
                 "source_file_hash": row["source_file_hash"],
             }
         )
-    return out
+    ratios = {(r["site"], r["pathogen"]): r["weeks_present_since_inclusion"] / r["weeks_expected_since_inclusion"]
+              for r in nwss_mod.build_coverage_gap_report(sc_extract) if r["weeks_expected_since_inclusion"]}
+    blend = {(r["site"], r["pathogen_normalized"], r["week_end"]) for r in sc_extract if "," in r["source"]}
+    if out:
+        NWSS_SOURCE_BLEND_KEYS.update((out[0]["source_snapshot_id"], *k) for k in blend)
+    return annotate_nwss(out, ratios, blend)
 
 
 def ingest_all_nwss(registry_rows: list[dict[str, str]], data_root: Path, extract_timestamp: str, state) -> list[dict[str, object]]:
@@ -510,27 +515,6 @@ def ingest_all_nwss(registry_rows: list[dict[str, str]], data_root: Path, extrac
     return all_rows
 
 
-def load_nwss_coverage_ratios(path: Path) -> dict[tuple[str, str], float]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    ratios = {}
-    for row in rows:
-        expected = int(row["weeks_expected_since_inclusion"])
-        if expected:
-            ratios[(row["site"], row["pathogen"])] = int(row["weeks_present_since_inclusion"]) / expected
-    return ratios
-
-
-def load_nwss_source_blend_keys(path: Path) -> set[tuple[str, str, str]]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    return {
-        (row["site"], row["pathogen_normalized"], row["week_end"])
-        for row in rows
-        if "," in row["source"]
-    }
-
-
 def annotate_nwss(
     rows: list[dict[str, object]],
     coverage_ratios: dict[tuple[str, str], float],
@@ -538,8 +522,9 @@ def annotate_nwss(
 ) -> list[dict[str, object]]:
     """Adds v1 `participation_status` companion rows and applies the v1
     `flagged_anomalous` tier-jump anomaly rule and source-blend anomaly
-    rule to the canonical NWSS rows. All are provisional rules, not
-    clinically validated.
+    rule to one snapshot's canonical NWSS rows, with that snapshot's
+    coverage ratios and blended-source weeks. All are provisional rules,
+    not clinically validated.
     """
     exclude = {"feature_name", "weekly_feature", "feature_unit", "observation_state", "definition_status"}
     participation_rows: list[dict[str, object]] = []
@@ -803,9 +788,6 @@ def main() -> None:
     nssp_hsa_participation = load_nssp_hsa_participation(args.hsa_facility_coverage_check)
     nssp_rows = annotate_nssp(nssp_rows, nssp_hsa_participation)
     nwss_rows = ingest_all_nwss(nwss_registry, args.data_root, extract_timestamp, state)
-    nwss_coverage_ratios = load_nwss_coverage_ratios(args.nwss_coverage_gap_report)
-    nwss_source_blend_keys = load_nwss_source_blend_keys(args.nwss_wide_extract)
-    nwss_rows = annotate_nwss(nwss_rows, nwss_coverage_ratios, nwss_source_blend_keys)
 
     all_versions = nhsn_rows + nssp_rows + nwss_rows
     large_output = args.large_output_dir or output
@@ -851,7 +833,8 @@ def main() -> None:
             1 for r in latest_view
             if r["stream_id"] == "nwss" and r["feature_name"] == "wastewater_activity_level"
             and r["observation_state"] == "flagged_anomalous"
-            and (r["analysis_region_id"], r["pathogen"], r["observation_week"]) in nwss_source_blend_keys
+            and (r["source_snapshot_id"], r["analysis_region_id"], r["pathogen"], r["observation_week"])
+            in NWSS_SOURCE_BLEND_KEYS
         ),
     }
 

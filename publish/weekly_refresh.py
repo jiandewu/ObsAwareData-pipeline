@@ -11,7 +11,8 @@ Stages (run in order; --start-at resumes after a failure without redoing earlier
               reasons are written to <work-root>/<as-of>/not_run.md (exit code 2).
     process   run_state_pipeline.py --as-of into <work-root>/<as-of>/; every state must PASS
     build     build_obsawaredata.py into the ObsAwareData working tree, with every state's
-              revision history written to <assets-root>/<tag>/; every state's checks must pass
+              revision history written to <assets-root>/<tag>/ and each source snapshot linked to
+              its file in the archive (archive/registry.csv); every state's checks must pass
     summary   compare the rebuilt latest tables with the repository's HEAD and write
               <work-root>/<as-of>/change_summary.md (+ .csv)
     docs      update_docs.py: refresh the dated facts in the repository's documentation, CHANGELOG
@@ -50,7 +51,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from build_obsawaredata import BUILD_VERSION, LONG_KEY, norm_series
+from build_obsawaredata import BUILD_VERSION, LATEST_FILE, LONG_KEY, latest_files, norm_series
 
 HERE = Path(__file__).resolve().parent
 PROCESSING = HERE.parent / "processing"
@@ -60,6 +61,7 @@ for _var in ("OAD_DATA_ROOT", "OAD_OUTPUT_ROOT"):
 DATA = Path(os.environ["OAD_DATA_ROOT"])
 OUTPUTS = Path(os.environ["OAD_OUTPUT_ROOT"])
 CROSS_STATE = HERE.parent / "reference"  # national geography audit and state threshold outputs
+ARCHIVE_REGISTRY = HERE.parent / "archive" / "registry.csv"
 STAGES = ["register", "process", "build", "summary"]
 STREAM_FEATURE = {"nhsn": "hospital_admission_count", "nssp": "ed_visit_percent", "nwss": "wastewater_activity_level"}
 
@@ -109,6 +111,16 @@ def run(cmd: list, cwd: Path, log: Path | None = None, attempts: int = 1, before
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
                           encoding="utf-8", check=True).stdout
+
+
+def archive_repo() -> str:
+    """<owner>/<name> holding the archive of CDC releases: GITHUB_REPOSITORY, else this checkout's origin."""
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    m = re.search(r"github\.com[:/](.+?/.+?)(?:\.git)?$", git(HERE, "remote", "get-url", "origin").strip())
+    if not m:
+        raise SystemExit("Cannot tell which GitHub repository holds the archive; set GITHUB_REPOSITORY.")
+    return m.group(1)
 
 
 def register(reg: Path) -> None:
@@ -184,7 +196,8 @@ def build(args: argparse.Namespace, out: Path, tag: str) -> None:
         raise SystemExit(f"{args.repo} has uncommitted changes; the change summary diffs against HEAD")
     cmd = ["build_obsawaredata.py", "--by-state", out / "by_state", "--sc-dir", out / "by_state" / "SC",
            "--repo", args.repo, "--assets-dir", args.assets_root / tag, "--release-tag", tag,
-           "--extract-timestamp", args.as_of.isoformat()]
+           "--extract-timestamp", args.as_of.isoformat(),
+           "--archive-registry", ARCHIVE_REGISTRY, "--archive-repo", archive_repo()]
     if args.states:
         cmd += ["--states", *args.states]
     def restore() -> None:  # the tree was clean before the build, so this only drops partial output
@@ -195,19 +208,19 @@ def build(args: argparse.Namespace, out: Path, tag: str) -> None:
         raise SystemExit("build: some states failed their consistency checks (see the quality reports)")
 
 
-def read_long(text_or_path) -> pd.DataFrame:
-    src = io.StringIO(text_or_path) if isinstance(text_or_path, str) else text_or_path
+def read_long(sources: list) -> pd.DataFrame:
+    """Concatenate long tables (paths or CSV text); none gives an empty table."""
     cols = LONG_KEY + ["weekly_feature", "observation_state"]
-    return pd.read_csv(src, dtype=str, keep_default_na=False, usecols=cols)
+    sources = sources or [",".join(cols) + "\n"]
+    return pd.concat([pd.read_csv(io.StringIO(s) if isinstance(s, str) else s, dtype=str, keep_default_na=False,
+                                  usecols=cols) for s in sources], ignore_index=True)
 
 
 def compare_state(repo: Path, st: str) -> dict:
-    rel = f"data/{st}/{st.lower()}_long_latest.csv"
-    try:
-        old = read_long(git(repo, "show", f"HEAD:{rel}"))
-    except subprocess.CalledProcessError:
-        old = read_long(io.StringIO(",".join(LONG_KEY + ["weekly_feature", "observation_state"]) + "\n"))
-    new = read_long(repo / rel)
+    old_files = [p for p in git(repo, "ls-tree", "--name-only", "HEAD", f"data/{st}/").split()
+                 if LATEST_FILE.search(p)]
+    old = read_long([git(repo, "show", f"HEAD:{p}") for p in old_files])
+    new = read_long(latest_files(repo / "data" / st, st.lower()))
     m = old.merge(new, on=LONG_KEY, how="outer", suffixes=("_old", "_new"), indicator=True)
     both = m[m._merge == "both"]
     row = {"state": st, "rows_old": len(old), "rows_new": len(new),
@@ -293,7 +306,7 @@ def main() -> None:
     summary(args, out, tag)
     if not args.states:  # a subset build leaves the national metadata, so the docs' facts, unchanged
         run(["update_docs.py", "--repo", args.repo, "--tag", tag, "--as-of", args.as_of.isoformat(),
-             "--archive-registry", HERE.parent / "archive" / "registry.csv",
+             "--archive-registry", ARCHIVE_REGISTRY,
              "--change-summary", out / "change_summary.csv"], HERE, out / "update_docs.log")
     cleanup(args.work_root, out, args.keep_weeks)
 

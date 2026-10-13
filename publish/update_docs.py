@@ -7,16 +7,16 @@ used, the release tag) sit in the documents between markers:
 
 and this script rewrites every marked value from the build outputs. It also sets `version` and
 `date-released` in CITATION.cff and writes the release's CHANGELOG entry: a new entry is added when
-the tag has none (marked as a data refresh when the version is unchanged, or with a placeholder for
-the rule changes when it is new), and the entry's generated block is rewritten on every run. Text
-outside the markers is never changed.
+the tag has none (marked as the first release when there is no earlier tag, as a data refresh when the
+version is unchanged, or with a placeholder for the rule changes when it is new), and the entry's
+generated block is rewritten on every run. Text outside the markers is never changed.
 
 Sources of the facts: the archive registry (releases on or before the as-of date), the data
 repository's metadata/coverage_summary.csv and metadata/release_assets.csv, its latest tag (the
 previous release), and the refresh's change_summary.csv.
 
 Usage:
-    python update_docs.py --repo <ObsAwareData dir> --tag v1.2.0+2026-10-09 --as-of 2026-10-09
+    python update_docs.py --repo <ObsAwareData dir> --tag v1.0.0+2026-10-16 --as-of 2026-10-16
         --archive-registry <archive/registry.csv> [--change-summary <change_summary.csv>]
         [--release-date YYYY-MM-DD]
 """
@@ -113,11 +113,11 @@ def changelog_block(args: argparse.Namespace, newest: dict[str, str], ends: dict
     what = " and ".join(f"{n} {k}" for k, n in kinds.items() if n) or "none"
     lines.append(f"- Revision history covers {counts} releases. Release assets added in this release: {what} "
                  "(see `metadata/release_assets.csv`).")
-    if args.change_summary and args.change_summary.exists():
+    prev = previous_tag(args.repo)
+    if prev and args.change_summary and args.change_summary.exists():
         cs = read_csv(args.change_summary)
         tot = {c: sum(int(r[c]) for r in cs) for c in ("added", "removed", "revised_values", "changed_flags")}
-        prev = previous_tag(args.repo) or "the previous release"
-        lines.append(f"- Compared with {prev[1:] if prev.startswith('v') else prev}: {tot['added']:,} rows added and "
+        lines.append(f"- Compared with {prev[1:]}: {tot['added']:,} rows added and "
                      f"{tot['removed']:,} removed in the latest-value tables; {tot['revised_values']:,} values revised; "
                      f"{tot['changed_flags']:,} `observation_state` values changed.")
     return "\n" + "\n".join(lines) + "\n"
@@ -129,9 +129,12 @@ def update_changelog(text: str, args: argparse.Namespace, block: str, released: 
     if head.search(text):
         return head.sub(f"## {version} (released {released})", text)
     prev = previous_tag(args.repo)
-    same_rules = prev.startswith("v") and prev[1:].split("+")[0] == version.split("+")[0]
-    intro = ("Data refresh with newer CDC source releases; the build rules are unchanged." if same_rules else
-             "<!-- Describe what changed in the build rules for this version. -->")
+    if not prev:
+        intro = "First release."
+    elif prev[1:].split("+")[0] == version.split("+")[0]:
+        intro = "Data refresh with newer CDC source releases; the build rules are unchanged."
+    else:
+        intro = "<!-- Describe what changed in the build rules for this version. -->"
     entry = (f"## {version} (released {released})\n\n{intro}\n\n"
              f"<!-- auto:changelog_data -->{block}<!-- /auto:changelog_data -->\n\n")
     m = re.search(r"^## \d", text, re.M)
