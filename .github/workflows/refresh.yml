@@ -124,8 +124,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.OBSAWAREDATA_TOKEN }}
           TAG: ${{ steps.refresh.outputs.tag }}
+        # Safe to rerun for the same tag: the branch is regenerated, and an existing pull request or
+        # draft release is updated instead of created. GitHub API calls are retried, and each create
+        # is checked afterwards, since a create can succeed even when the call reports an error.
         run: |
-          summary=$(ls -td out/weekly_runs/*/change_summary.md | head -1)
+          retry() { for n in 1 2 3 4 5; do "$@" && return 0; echo "attempt $n failed; retrying in $((60 * n)) s"; sleep $((60 * n)); done; return 1; }
+          summary="$GITHUB_WORKSPACE/$(ls -td out/weekly_runs/*/change_summary.md | head -1)"
+          assets="$OAD_OUTPUT_ROOT/ObsAwareData_release_assets/$TAG"
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           cd out/ObsAwareData
           git config user.name "github-actions[bot]"
@@ -134,11 +139,32 @@ jobs:
           git switch -c "$branch"
           git add -A
           git commit -q -m "Data refresh $TAG"
-          git push -q origin "$branch"
-          gh pr create --repo "$DATA_REPO" --base main --head "$branch" --title "Data refresh $TAG" \
-            --body-file "$GITHUB_WORKSPACE/$summary"
-          gh release create "$TAG" --repo "$DATA_REPO" --draft --target "$branch" --title "$TAG" \
-            --notes-file "$GITHUB_WORKSPACE/$summary" "$OAD_OUTPUT_ROOT/ObsAwareData_release_assets/$TAG"/*
+          retry git push -q --force origin "$branch"
+
+          pr_exists() { gh pr view "$branch" --repo "$DATA_REPO" --json state --jq .state 2>/dev/null | grep -q OPEN; }
+          if pr_exists; then
+            retry gh pr edit "$branch" --repo "$DATA_REPO" --body-file "$summary"
+          else
+            for n in 1 2 3 4 5; do
+              gh pr create --repo "$DATA_REPO" --base main --head "$branch" --title "Data refresh $TAG" --body-file "$summary" && break
+              sleep $((60 * n)); pr_exists && break
+            done
+            pr_exists || { echo "::error::could not open the pull request"; exit 1; }
+          fi
+
+          draft=$(gh release view "$TAG" --repo "$DATA_REPO" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ "$draft" = "false" ]; then
+            echo "::error::release $TAG is already published; not changing it"; exit 1
+          elif [ "$draft" = "true" ]; then
+            retry gh release edit "$TAG" --repo "$DATA_REPO" --target "$branch" --notes-file "$summary"
+          else
+            gh release create "$TAG" --repo "$DATA_REPO" --draft --target "$branch" --title "$TAG" --notes-file "$summary" \
+              || retry gh release view "$TAG" --repo "$DATA_REPO" > /dev/null
+          fi
+          retry gh release upload "$TAG" --repo "$DATA_REPO" --clobber "$assets"/*
+          n=$(gh release view "$TAG" --repo "$DATA_REPO" --json assets --jq '.assets | length')
+          echo "draft release $TAG: $n assets (expected $(ls "$assets" | wc -l))"
+          [ "$n" -ge "$(ls "$assets" | wc -l)" ]
 
       - name: Save snapshot registries
         if: always() && hashFiles('out/weekly_runs/registry/*.csv') != ''
