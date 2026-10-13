@@ -7,9 +7,12 @@ used, the release tag) sit in the documents between markers:
 
 and this script rewrites every marked value from the build outputs. It also sets `version` and
 `date-released` in CITATION.cff and writes the release's CHANGELOG entry: a new entry is added when
-the tag has none (marked as the first release when there is no earlier tag, as a data refresh when the
-version is unchanged, or with a placeholder for the rule changes when it is new), and the entry's
-generated block is rewritten on every run. Text outside the markers is never changed.
+the tag has none (marked as a data refresh when the version is unchanged; for the first release or a
+new version, with the description written in changes/<version>.md next to this script, which must
+exist), and the entry's generated block is rewritten on every run:
+the source releases used, the revision-history assets, the comparison with the previous release, and
+the source changes found in it (rows no longer present, a source's last week moving back). Text
+outside the markers is never changed.
 
 Sources of the facts: the archive registry (releases on or before the as-of date), the data
 repository's metadata/coverage_summary.csv and metadata/release_assets.csv, its latest tag (the
@@ -29,6 +32,7 @@ import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
 STREAMS = {"nhsn": "NHSN", "nssp": "NSSP", "nwss": "NWSS"}
 DOCS = ["README.md", "DATA_SOURCES.md", "DATA_DICTIONARY.md", "METHODS.md", "CHANGELOG.md"]
 MARKER = re.compile(r"<!-- auto:([a-z0-9_]+) -->(.*?)<!-- /auto:\1 -->", re.S)
@@ -120,7 +124,26 @@ def changelog_block(args: argparse.Namespace, newest: dict[str, str], ends: dict
         lines.append(f"- Compared with {prev[1:]}: {tot['added']:,} rows added and "
                      f"{tot['removed']:,} removed in the latest-value tables; {tot['revised_values']:,} values revised; "
                      f"{tot['changed_flags']:,} `observation_state` values changed.")
+        notes = change_warnings(cs)
+        if notes:
+            lines.append("- Source changes found in this release:")
+            lines += [f"  - {n}" for n in notes]
     return "\n" + "\n".join(lines) + "\n"
+
+
+def change_warnings(rows: list[dict]) -> list[str]:
+    """Per-state source changes worth noting, from change_summary rows: rows of the previous release no
+    longer in the latest-value tables, and a source's last week with data moving back."""
+    out = []
+    for r in rows:
+        if int(r["removed"]):
+            out.append(f"{r['state']}: {int(r['removed']):,} rows of the previous release are no longer in the "
+                       "latest-value tables")
+        for s, label in STREAMS.items():
+            old, new = r[f"{s}_last_week_old"], r[f"{s}_last_week_new"]
+            if new < old:
+                out.append(f"{r['state']}: {label}'s last week with data moved back from {old} to {new or 'none'}")
+    return out
 
 
 def update_changelog(text: str, args: argparse.Namespace, block: str, released: str) -> str:
@@ -129,12 +152,13 @@ def update_changelog(text: str, args: argparse.Namespace, block: str, released: 
     if head.search(text):
         return head.sub(f"## {version} (released {released})", text)
     prev = previous_tag(args.repo)
-    if not prev:
-        intro = "First release."
-    elif prev[1:].split("+")[0] == version.split("+")[0]:
+    if prev and prev[1:].split("+")[0] == version.split("+")[0]:
         intro = "Data refresh with newer CDC source releases; the build rules are unchanged."
-    else:
-        intro = "<!-- Describe what changed in the build rules for this version. -->"
+    else:  # the first release, or new build rules
+        changes = HERE / "changes" / f"{version.split('+')[0]}.md"
+        if not changes.exists():
+            raise SystemExit(f"{changes} is missing: describe the rule changes of version {version.split('+')[0]} there")
+        intro = changes.read_text(encoding="utf-8").strip()
     entry = (f"## {version} (released {released})\n\n{intro}\n\n"
              f"<!-- auto:changelog_data -->{block}<!-- /auto:changelog_data -->\n\n")
     m = re.search(r"^## \d", text, re.M)

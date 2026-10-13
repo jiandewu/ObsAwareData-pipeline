@@ -19,10 +19,11 @@ Each state's history is a chain listed in metadata/release_assets.csv: one `full
 release; concatenating the chain in order (dropping repeated headers) gives the complete table.
 In revision history, `extract_timestamp` is the as-of date of the release that first published
 the row's snapshot, so published rows never change. A state gets a new `full` file instead of an
-increment when the build rules changed (BUILD_VERSION), when any already-published snapshot's rows
-differ in the new processing output (compared by per-snapshot row count and row-hash sum, excluding
-`extract_timestamp` and `source_file_hash`), when its last full file is REBASE_DAYS or more older than this release, when
-it has no published history, or with --full. Earlier chain files are read from
+increment when the build rules changed (BUILD_VERSION), when its last full file is REBASE_DAYS or
+more older than this release, when it has no published history, or with --full. Under unchanged
+build rules, an already-published snapshot whose rows differ in the new processing output (compared
+by per-snapshot row count and row-hash sum, excluding `extract_timestamp` and `source_file_hash`)
+stops the build: the processing is per snapshot, so this points to a bug. Earlier chain files are read from
 <assets root>/<their tag>/ and downloaded from their release URL when missing.
 
 The processing scripts (../processing/) produce the per-state tables; this script only packages them.
@@ -266,8 +267,10 @@ def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict],
         reason = "no published revision history"
     elif chain[0]["version"] != BUILD_VERSION:
         reason = f"build rules changed ({chain[0]['version']} to {BUILD_VERSION})"
-    elif changed:
-        reason = f"{len(changed)} published snapshot(s) changed or missing"
+    elif changed:  # same rules, same archived files: published rows must not change
+        raise SystemExit(f"{st}: {len(changed)} published snapshot(s) changed or missing under the same build rules "
+                         f"({BUILD_VERSION}), e.g. {', '.join(sorted(changed)[:3])}. Fix the processing, or bump "
+                         "BUILD_VERSION if the rules changed (--full rebuilds every state's history).")
     elif (date.fromisoformat(stamp) - date.fromisoformat(chain[0]["as_of"])).days >= REBASE_DAYS:
         reason = f"last full file is from {chain[0]['as_of']}"
     else:

@@ -63,11 +63,13 @@ rounds half to even; the values are otherwise the same.
 |---|---|
 | [`archive/`](archive/) | The archive scripts above, and [`materialize.py`](archive/materialize.py), which rebuilds the raw-data folder the processing step reads (dated CSV files per dataset) from the archive |
 | [`processing/`](processing/) | Snapshot registries (`register_*.py`), per-state steps (`extract_*.py`, `check_nssp_facility_coverage.py`, `validate_weekly_schema.py`, `build_*.py`), the multi-state driver [`run_state_pipeline.py`](processing/run_state_pipeline.py), and the one-time cross-state derivations (`audit_national_geography.py`, `derive_state_thresholds.py`) |
-| [`publish/`](publish/) | [`build_obsawaredata.py`](publish/build_obsawaredata.py) (processing outputs to the ObsAwareData repository and its release assets) and [`weekly_refresh.py`](publish/weekly_refresh.py) (register, pre-run checks, processing, build, change summary) |
+| [`publish/`](publish/) | [`build_obsawaredata.py`](publish/build_obsawaredata.py) (processing outputs to the ObsAwareData repository and its release assets), [`weekly_refresh.py`](publish/weekly_refresh.py) (register, pre-run checks, processing, build, change summary), [`update_docs.py`](publish/update_docs.py) (the dated facts and the CHANGELOG entry in its documentation), and [`changes/<version>.md`](publish/changes/): what the first release holds and what each later version changed in the build rules, which must be written before a refresh under that version runs |
 | [`reference/`](reference/) | Fixed inputs: CDC's NSSP coverage map (from https://www.cdc.gov/nssp/documents/coverage-map.csv), the national geography summary, and the per-state thresholds |
 | [`tools/`](tools/) | [`fetch_census.py`](tools/fetch_census.py): the Census Bureau files the processing step uses |
 
-Each week the dataset is rebuilt as of the most recent Friday and reviewed before it is published.
+Each week the dataset is rebuilt as of the most recent Friday and published once every check has
+passed. A failed check, or a change to an already-published source release under the same build
+rules, stops the refresh before anything is published.
 Revision history is published as release assets: per state, one full file followed by weekly
 increments, listed in the data repository's `metadata/release_assets.csv`.
 

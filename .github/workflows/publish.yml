@@ -1,9 +1,18 @@
 name: Publish an ObsAwareData release
 
-# Run by hand after the refresh pull request (with any documentation edits) is merged: checks that
-# the data repository's main branch holds the reviewed data, then publishes the draft release on it.
+# Called by the refresh after it merges the refresh pull request, or run by hand after merging one:
+# checks that the data repository's main branch holds the refresh branch's data, publishes the draft
+# release on main, and deletes the refresh branch.
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      OBSAWAREDATA_TOKEN:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -45,3 +54,8 @@ jobs:
         run: |
           gh release edit "$TAG" --repo "$DATA_REPO" --target main --draft=false --latest
           gh release view "$TAG" --repo "$DATA_REPO" --json tagName,url,assets --jq '"\(.url) (\(.assets | length) assets)"'
+
+      - name: Delete the refresh branch
+        env:
+          TAG: ${{ inputs.tag }}
+        run: git push -q origin --delete "refresh/$TAG"

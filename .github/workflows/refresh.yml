@@ -1,8 +1,11 @@
 name: Weekly ObsAwareData refresh
 
-# Rebuilds ObsAwareData from the archive as of the most recent Friday and proposes the result for
-# review: a pull request on the data repository (body: the change summary) and a draft release with
-# the revision-history assets. Nothing is published here; see publish.yml.
+# Rebuilds ObsAwareData from the archive as of the most recent Friday, opens a pull request on the
+# data repository (body: the change summary) and a draft release with the revision-history assets,
+# then merges the pull request and publishes the release (publish.yml). Every check runs before the
+# merge: a failed check, or a change to an already-published snapshot under the same build rules,
+# stops the run before anything is merged. With publish unticked (manual runs), it stops at the
+# pull request and draft release.
 # Secrets: OBSAWAREDATA_TOKEN (contents and pull requests read/write on the data repository) and
 # CENSUS_API_KEY.
 
@@ -18,6 +21,10 @@ on:
         description: "Run even if the pre-run checks fail"
         type: boolean
         default: false
+      publish:
+        description: "Merge the pull request and publish the release"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -36,6 +43,8 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    outputs:
+      tag: ${{ steps.refresh.outputs.tag }}
     steps:
       - name: Free disk space  # the raw files and intermediate outputs need ~20 GB
         run: |
@@ -166,6 +175,19 @@ jobs:
           echo "draft release $TAG: $n assets (expected $(ls "$assets" | wc -l))"
           [ "$n" -ge "$(ls "$assets" | wc -l)" ]
 
+      - name: Merge the pull request
+        if: github.event_name == 'schedule' || inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.OBSAWAREDATA_TOKEN }}
+          TAG: ${{ steps.refresh.outputs.tag }}
+        # GitHub may still be computing whether a new pull request can be merged, so retry.
+        run: |
+          for n in 1 2 3 4 5; do
+            gh pr merge "refresh/$TAG" --repo "$DATA_REPO" --squash --subject "Data refresh $TAG" --body "" && break
+            sleep $((30 * n))
+          done
+          gh pr view "refresh/$TAG" --repo "$DATA_REPO" --json state --jq .state | grep -q MERGED
+
       - name: Save snapshot registries
         if: always() && hashFiles('out/weekly_runs/registry/*.csv') != ''
         uses: actions/cache/save@v4
@@ -185,3 +207,11 @@ jobs:
             out/weekly_runs/*/not_run.md
             out/weekly_runs/*/*.log
           if-no-files-found: ignore
+
+  publish:
+    needs: refresh
+    if: github.event_name == 'schedule' || inputs.publish
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag: ${{ needs.refresh.outputs.tag }}
+    secrets: inherit

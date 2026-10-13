@@ -52,6 +52,7 @@ from pathlib import Path
 import pandas as pd
 
 from build_obsawaredata import BUILD_VERSION, LATEST_FILE, LONG_KEY, latest_files, norm_series
+from update_docs import change_warnings
 
 HERE = Path(__file__).resolve().parent
 PROCESSING = HERE.parent / "processing"
@@ -240,13 +241,7 @@ def summary(args: argparse.Namespace, out: Path, tag: str) -> None:
     rows = [compare_state(args.repo, st) for st in states]
     df = pd.DataFrame(rows)
     df.to_csv(out / "change_summary.csv", index=False, lineterminator="\n")
-    warn = []
-    for r in rows:
-        if r["removed"]:
-            warn.append(f"{r['state']}: {r['removed']:,} rows of the previous release are gone")
-        for s in STREAM_FEATURE:
-            if r[f"{s}_last_week_new"] < r[f"{s}_last_week_old"]:
-                warn.append(f"{r['state']}: {s} last week moved back ({r[f'{s}_last_week_old']} -> {r[f'{s}_last_week_new']})")
+    warn = change_warnings(rows)
     last = {s: (df[f"{s}_last_week_old"].max(), df[f"{s}_last_week_new"].max()) for s in STREAM_FEATURE}
     with (out / "inputs" / "selected_snapshots.csv").open(encoding="utf-8", newline="") as f:
         sel = [r for r in csv.DictReader(f) if r["input"].endswith("_newest")]
@@ -264,13 +259,11 @@ def summary(args: argparse.Namespace, out: Path, tag: str) -> None:
           f"States: {len(rows)}. Rows added {tot('added')}, removed {tot('removed')}; values revised {tot('revised_values')}; "
           f"observation_state changed {tot('changed_flags')}. Per state: `change_summary.csv`.", "",
           f"Files changed in the working tree: {len(changed)}.", "",
-          "## Warnings", "", *([f"- {w}" for w in warn] or ["None."]), "",
-          "## Before publishing", "",
-          "1. Review the data changes above and the documentation changes. Dates, counts, the CHANGELOG entry's "
-          "generated block, and CITATION.cff are filled in automatically; add any notable source changes "
-          f"(and, for a new version, the rule changes) to the CHANGELOG entry `{tag[1:]}`.",
-          f"2. Merge the changes into main, then publish the draft release `{tag}` (assets in "
-          f"`{args.assets_root / tag}`)."]
+          "## Source changes", "", *([f"- {w}" for w in warn] or ["None."]), "",
+          "## Publishing", "",
+          f"The refresh has filled in the documentation's dates and counts, CITATION.cff, and the CHANGELOG entry "
+          f"`{tag[1:]}`, including the source changes above. Once every check has passed, the changes are merged "
+          f"into main and the release `{tag}` is published with its assets (`{args.assets_root / tag}`)."]
     (out / "change_summary.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
     print("\n".join(md).encode("ascii", "replace").decode())
 
@@ -286,6 +279,11 @@ def cleanup(work_root: Path, out: Path, keep: int) -> None:
 
 def main() -> None:
     args = parse_args()
+    tags = [t for t in git(args.repo, "tag", "--list", "v*").split() if "+" in t]
+    last_version = max(tags, key=lambda t: t.split("+", 1)[1])[1:].split("+")[0] if tags else ""
+    if last_version != args.version and not (HERE / "changes" / f"{args.version}.md").exists():
+        raise SystemExit(f"Version {args.version} is new (latest release: {last_version or 'none'}): describe it "
+                         f"in publish/changes/{args.version}.md first.")
     reg, out = args.work_root / "registry", args.work_root / args.as_of.isoformat()
     out.mkdir(parents=True, exist_ok=True)
     todo = STAGES[STAGES.index(args.start_at):]
