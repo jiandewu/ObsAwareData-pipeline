@@ -170,10 +170,14 @@ jobs:
             gh release create "$TAG" --repo "$DATA_REPO" --draft --target "$branch" --title "$TAG" --notes-file "$summary" \
               || retry gh release view "$TAG" --repo "$DATA_REPO" > /dev/null
           fi
-          retry gh release upload "$TAG" --repo "$DATA_REPO" --clobber "$assets"/*
+          # no assets when no state has a newly published snapshot (e.g. a version change without new data)
+          expected=$(ls "$assets" 2>/dev/null | wc -l)
+          if [ "$expected" -gt 0 ]; then
+            retry gh release upload "$TAG" --repo "$DATA_REPO" --clobber "$assets"/*
+          fi
           n=$(gh release view "$TAG" --repo "$DATA_REPO" --json assets --jq '.assets | length')
-          echo "draft release $TAG: $n assets (expected $(ls "$assets" | wc -l))"
-          [ "$n" -ge "$(ls "$assets" | wc -l)" ]
+          echo "draft release $TAG: $n assets (expected $expected)"
+          [ "$n" -ge "$expected" ]
 
       - name: Merge the pull request
         if: github.event_name == 'schedule' || inputs.publish
