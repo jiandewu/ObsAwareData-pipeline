@@ -3,14 +3,16 @@
 Copies the selected per-state tables under public file names, regenerates a clean per-state
 quality report from the published files themselves (no internal process notes), cross-checks
 every wide table against the long table, and writes national summary tables plus a SHA-256
-manifest. With --extract-timestamp, the long table's `extract_timestamp` column is set to that
-value (the refresh's as-of date) instead of the processing run time.
+manifest.
 
 The latest-value long table is published as one file per observation year
 (<st>_long_latest_<year>.csv, by the year of `observation_week`), so no file grows past GitHub's
-size limits. Published long tables carry no `source_file_hash` column: each source snapshot's
-SHA-256, and with --archive-registry its file in the archive of CDC releases, is listed once in
-metadata/source_snapshots.csv.
+size limits. Each of its rows points to the release that first published its current content
+(processing/build_observation_tables.py, anchor_to_first_release), and it has no
+`extract_timestamp`, so a row changes only when its value or flags do and the repository's history
+grows with the actual changes. Published long tables carry no `source_file_hash` column: each
+source snapshot's SHA-256, and with --archive-registry its file in the archive of CDC releases, is
+listed once in metadata/source_snapshots.csv.
 
 Revision history (all-versions table, one row per value and source snapshot) is published only as
 GitHub Release assets (--assets-dir <assets root>/<tag>), gzipped deterministically, never in git.
@@ -18,12 +20,13 @@ Each state's history is a chain listed in metadata/release_assets.csv: one `full
 `increment` per later release holding only the rows of source snapshots first published in that
 release; concatenating the chain in order (dropping repeated headers) gives the complete table.
 In revision history, `extract_timestamp` is the as-of date of the release that first published
-the row's snapshot, so published rows never change. A state gets a new `full` file instead of an
-increment when the build rules changed (BUILD_VERSION), when its last full file is REBASE_DAYS or
-more older than this release, when it has no published history, or with --full. Under unchanged
-build rules, an already-published snapshot whose rows differ in the new processing output (compared
-by per-snapshot row count and row-hash sum, excluding `extract_timestamp` and `source_file_hash`)
-stops the build: the processing is per snapshot, so this points to a bug. Earlier chain files are read from
+the row's snapshot, so published rows never change. Each release compares every already-published
+snapshot with the new processing output (per-snapshot row count and row-hash sum, excluding
+`extract_timestamp` and `source_file_hash`). If any differs, a new BUILD_VERSION gets a new `full`
+file, while under unchanged build rules the build stops: the processing is per snapshot, so this
+points to a bug. A state also gets a new `full` file when its last full file is REBASE_DAYS or more
+older than this release, when it has no published history, or with --full; otherwise an
+increment, even across a version change that leaves the history as it was. Earlier chain files are read from
 <assets root>/<their tag>/ and downloaded from their release URL when missing.
 
 The processing scripts (../processing/) produce the per-state tables; this script only packages them.
@@ -59,7 +62,7 @@ FILE_MAP = {
 RELEASE_BASE_URL = "https://github.com/DMA-PRIME/ObsAwareData/releases/download"
 # Version of the build rules (the <version> in tag v<version>+<data date>; see the repo CHANGELOG).
 # Bump it here, together with a CHANGELOG entry, whenever this script or the processing rules change.
-BUILD_VERSION = "1.0.0"
+BUILD_VERSION = "2.0.0"
 REBASE_DAYS = 365  # a state's chain restarts with a full file at least this often
 ASSET_FIELDS = ["tag", "version", "state", "file", "kind", "as_of", "snapshots", "rows", "bytes", "sha256", "url"]
 SNAPSHOT_FIELDS = ["source_snapshot_id", "stream_id", "release_channel", "as_of_date", "source_file_hash", "archive_url"]
@@ -89,8 +92,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--assets-dir", type=Path,
                    help="<assets root>/<tag>: write this release's revision-history assets here")
     p.add_argument("--release-tag", help="Tag the assets are uploaded to (required with --assets-dir)")
-    p.add_argument("--extract-timestamp", help="The release's as-of date, used as extract_timestamp "
-                   "(default: keep the processing step's; required with --assets-dir)")
+    p.add_argument("--extract-timestamp", help="The release's as-of date: the revision history's extract_timestamp for "
+                   "newly published snapshots (required with --assets-dir)")
     p.add_argument("--full", action="store_true", help="Publish a full revision-history file for every state")
     p.add_argument("--archive-registry", type=Path,
                    help="archive/registry.csv: link each source snapshot to its archived file")
@@ -131,28 +134,28 @@ def check_long_header(header: bytes, src: Path) -> None:
         raise ValueError(f"{src}: unexpected long-table columns")
 
 
-def split_latest(src: Path, out_dir: Path, lo: str, stamp: str | None) -> dict[str, dict]:
+def split_latest(src: Path, out_dir: Path, lo: str) -> dict[str, dict]:
     """Write the latest view as <lo>_long_latest_<year>.csv (by the year of observation_week), without
-    source_file_hash and with every extract_timestamp set to `stamp` if given. Returns each source
-    snapshot's stream, as-of date, and file hash."""
+    extract_timestamp and source_file_hash: every remaining field changes only when the row's
+    content does (the processing anchors each row to the release that first published its content).
+    Returns each source snapshot's stream, as-of date, and file hash."""
     files, snaps = {}, {}
     try:
         with open(src, "rb") as fin:
             header = fin.readline()
             check_long_header(header, src)
-            header = drop_last_field(header)
+            f = header.split(b",", 4)
+            header = drop_last_field(b",".join(f[:3] + f[4:]))
             for line in fin:
-                f = line.split(b",", 5)
+                f = line.split(b",", 4)
                 if f[1] not in snaps:
                     snaps[f[1]] = {"stream_id": f[0].decode(), "as_of_date": f[2].decode(),
                                    "source_file_hash": line.rstrip(b"\r\n").rsplit(b",", 1)[1].decode()}
-                if stamp is not None:
-                    f[3] = stamp.encode()
                 year = f[4][:4].decode()
                 if year not in files:
                     files[year] = open(out_dir / f"{lo}_long_latest_{year}.csv", "wb")
                     files[year].write(header)
-                files[year].write(drop_last_field(b",".join(f)))
+                files[year].write(drop_last_field(b",".join(f[:3] + f[4:])))
     finally:
         for fh in files.values():
             fh.close()
@@ -256,21 +259,22 @@ def build_revision_assets(st: str, av_src: Path, rev: dict) -> tuple[list[dict],
     new = snapshot_digest([src])
     info = {s: d["info"] for s, d in new.items()}
     old, paths, changed = {}, [], []
-    if chain and chain[0]["version"] == BUILD_VERSION:
+    if chain:
         paths = chain_paths(chain, rev["dir"].parent)
         old = snapshot_digest(paths)
         changed = [s for s, d in old.items()
                    if s not in new or (new[s]["rows"], new[s]["hsum"]) != (d["rows"], d["hsum"])]
+    published_version = chain[-1]["version"] if chain else ""
     if rev["full"]:
         reason = "requested (--full)"
     elif not chain:
         reason = "no published revision history"
-    elif chain[0]["version"] != BUILD_VERSION:
-        reason = f"build rules changed ({chain[0]['version']} to {BUILD_VERSION})"
-    elif changed:  # same rules, same archived files: published rows must not change
+    elif changed and published_version == BUILD_VERSION:  # same rules, same archived files
         raise SystemExit(f"{st}: {len(changed)} published snapshot(s) changed or missing under the same build rules "
                          f"({BUILD_VERSION}), e.g. {', '.join(sorted(changed)[:3])}. Fix the processing, or bump "
                          "BUILD_VERSION if the rules changed (--full rebuilds every state's history).")
+    elif changed:
+        reason = f"build rules changed ({published_version} to {BUILD_VERSION}) and {len(changed)} published snapshot(s) differ"
     elif (date.fromisoformat(stamp) - date.fromisoformat(chain[0]["as_of"])).days >= REBASE_DAYS:
         reason = f"last full file is from {chain[0]['as_of']}"
     else:
@@ -418,7 +422,7 @@ def revision_history_stats(paths: list[Path], long: pd.DataFrame) -> dict:
             "revised": int((nver > 1).sum()), "missing": int((~found).sum()), "vdiff": vdiff, "per": per}
 
 
-def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | None = None,
+def build_state(st: str, src_dir: Path, repo: Path, copy: bool,
                 rev: dict | None = None) -> tuple[dict, dict, list[dict] | None, str, dict]:
     """Build one state's folder; with `rev` (assets dir, tag, stamp, chain, full), also its
     revision-history asset. Returns the summary row, thresholds row, new chain, full-file reason, and
@@ -433,7 +437,7 @@ def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | Non
             shutil.copyfile(src_dir / f"{lo}_{s}", out_dir / f"{lo}_{d}")
         for p in latest_files(out_dir, lo):  # last release's years
             p.unlink()
-        source_snaps = split_latest(src_dir / f"{lo}_latest_view.csv", out_dir, lo, stamp)
+        source_snaps = split_latest(src_dir / f"{lo}_latest_view.csv", out_dir, lo)
     chain, av_paths, full_reason = None, [], ""
     if rev:
         chain, av_paths, full_reason, rev_snaps = build_revision_assets(st, av_src, rev)
@@ -502,7 +506,8 @@ def build_state(st: str, src_dir: Path, repo: Path, copy: bool, stamp: str | Non
     for p in PATHOGENS:  # a cutoff is only meaningful where the state has sites for the pathogen
         if sites[p] == 0:
             thresholds[f"nwss_min_coverage_ratio_{p}"] = ""
-    snaps = long.groupby("stream_id").as_of_date.agg(lambda x: ", ".join(sorted(set(x))))
+    snaps = long.groupby("stream_id").as_of_date.agg(
+        lambda x: x.max() if x.nunique() == 1 else f"{x.min()} to {x.max()} ({x.nunique()} releases)")
 
     # ---- observation-state counts
     st_counts = (long.groupby(["stream_id", "feature_name", "observation_state"]).size()
@@ -565,7 +570,7 @@ Generated from the published files in this folder. Overall result: **{'all check
 - State FIPS code: {fips}
 - Emergency-department regions (CDC health service areas): {n_hsa}
 - Wastewater sampling sites: {n_sites} (with COVID-19 data: {sites['covid']}; influenza A: {sites['influenza']}; RSV: {sites['rsv']})
-- Source snapshot dates used for the latest values: hospital admissions {snaps.get('nhsn', 'none')}; ED visits {snaps.get('nssp', 'none')}; wastewater {snaps.get('nwss', 'none')}
+- Source releases cited by the latest values (each row cites the release that first published its current value): hospital admissions {snaps.get('nhsn', 'none')}; ED visits {snaps.get('nssp', 'none')}; wastewater {snaps.get('nwss', 'none')}
 
 ## Files
 
@@ -644,7 +649,7 @@ def main() -> None:
         rev = ({"dir": args.assets_dir, "tag": args.release_tag, "stamp": args.extract_timestamp,
                 "chain": chains.get(st, []), "full": args.full} if args.assets_dir else None)
         s, t, chain, reason, snaps = build_state(st, src, args.repo, copy=not args.no_copy,
-                                                 stamp=args.extract_timestamp, rev=rev)
+                                                 rev=rev)
         summaries.append(s)
         thresholds.append(t)
         for sid, d in snaps.items():

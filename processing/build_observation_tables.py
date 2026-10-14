@@ -703,6 +703,32 @@ def build_view(all_versions: list[dict[str, object]], cutoff: str | None) -> lis
     return list(best.values())
 
 
+PROVENANCE_FIELDS = {"source_snapshot_id", "as_of_date", "extract_timestamp", "source_file_hash"}
+CONTENT_FIELDS = [f for f in CANONICAL_FIELDS if f not in PROVENANCE_FIELDS]
+
+
+def anchor_to_first_release(latest_view: list[dict[str, object]],
+                            all_versions: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Replace each latest row by the same row from the earliest snapshot since which every snapshot
+    carrying its key has published it unchanged (every field but the provenance fields). The value
+    and flags stay those of the newest snapshot; the provenance points to the release that first
+    published them, so a latest row only changes when its content does. Snapshots are ordered as in
+    build_view: by as_of_date, and on a tie the earlier row in all_versions counts as newer."""
+    by_key: dict[tuple, list[tuple]] = defaultdict(list)
+    for i, row in enumerate(all_versions):
+        by_key[build_key(row)].append((row["as_of_date"], -i, row))
+    content = lambda r: tuple(r[f] for f in CONTENT_FIELDS)
+    out = []
+    for row in latest_view:
+        current, anchor = content(row), row
+        for _, _, version in sorted(by_key[build_key(row)], key=lambda t: t[:2], reverse=True):
+            if content(version) != current:
+                break
+            anchor = version
+        out.append(anchor)
+    return out
+
+
 def check_snapshot_ordering(all_versions: list[dict[str, object]]) -> dict[str, object]:
     by_key: dict[tuple, list[dict[str, object]]] = defaultdict(list)
     for row in all_versions:
@@ -793,7 +819,7 @@ def main() -> None:
     large_output = args.large_output_dir or output
     write_csv(large_output / f"{prefix}_all_versions.csv", all_versions, CANONICAL_FIELDS)
 
-    latest_view = build_view(all_versions, cutoff=None)
+    latest_view = anchor_to_first_release(build_view(all_versions, cutoff=None), all_versions)
     write_csv(output / f"{prefix}_latest_view.csv", latest_view, CANONICAL_FIELDS)
 
     cutoff = args.point_in_time_cutoff
