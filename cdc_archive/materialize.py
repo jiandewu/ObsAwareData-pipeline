@@ -11,8 +11,8 @@ and every file is checked against the registry's SHA-256 before and after decomp
 already present under --out with the right size are kept.
 
 Usage:
-    python archive/materialize.py --out <data root> [--as-of 2026-10-09] [--cache <dir>]
-        [--registry archive/registry.csv]
+    python cdc_archive/materialize.py --out <data root> [--as-of 2026-10-09] [--cache <dir>]
+        [--registry cdc_archive/registry.csv]
 """
 from __future__ import annotations
 
@@ -66,8 +66,11 @@ def fetch(url: str, dest: Path, expected_sha: str) -> None:
 
 
 def origin_repo() -> str | None:
-    """<owner>/<name> of this checkout's GitHub origin, if any."""
-    url = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "remote", "get-url", "origin"],
+    """<owner>/<name> of this checkout's GitHub remote named 'public' (a development clone whose origin
+    is elsewhere), else of its origin, if any."""
+    here = str(Path(__file__).resolve().parent)
+    remotes = subprocess.run(["git", "-C", here, "remote"], capture_output=True, text=True).stdout.split()
+    url = subprocess.run(["git", "-C", here, "remote", "get-url", "public" if "public" in remotes else "origin"],
                          capture_output=True, text=True).stdout.strip()
     m = re.search(r"github\.com[:/](.+?/.+?)(?:\.git)?$", url)
     return m.group(1) if m else None

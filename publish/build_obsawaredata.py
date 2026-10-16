@@ -35,7 +35,7 @@ Usage:
     python build_obsawaredata.py --by-state <processing by_state dir> --sc-dir <by_state/SC>
         --repo <ObsAwareData dir> [--states CA TX] [--no-copy]
         [--assets-dir <assets root>/<tag> --release-tag v1.0.0+2026-10-16 --extract-timestamp 2026-10-16 [--full]]
-        [--archive-registry <archive/registry.csv> --archive-repo <owner>/<name>]
+        [--archive-registry <cdc_archive/registry.csv> --archive-repo <owner>/<name>]
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
                    "newly published snapshots (required with --assets-dir)")
     p.add_argument("--full", action="store_true", help="Publish a full revision-history file for every state")
     p.add_argument("--archive-registry", type=Path,
-                   help="archive/registry.csv: link each source snapshot to its archived file")
+                   help="cdc_archive/registry.csv: link each source snapshot to its archived file")
     p.add_argument("--archive-repo", help="<owner>/<name> holding the archive (required with --archive-registry)")
     args = p.parse_args()
     if args.archive_registry and not args.archive_repo:

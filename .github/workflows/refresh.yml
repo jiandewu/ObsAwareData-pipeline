@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: cache/archive
-          key: archive-${{ hashFiles('archive/registry.csv') }}
+          key: archive-${{ hashFiles('cdc_archive/registry.csv') }}
           restore-keys: archive-
 
       - name: Restore Census inputs
@@ -103,14 +103,14 @@ jobs:
           key: census-${{ hashFiles('tools/fetch_census.py') }}
 
       - name: Raw CDC files from the archive
-        run: python archive/materialize.py --out data --cache cache/archive ${AS_OF:+--as-of "$AS_OF"}
+        run: python cdc_archive/materialize.py --out data --cache cache/archive ${AS_OF:+--as-of "$AS_OF"}
 
       - name: Save archived CDC files
         if: steps.archive-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: cache/archive
-          key: archive-${{ hashFiles('archive/registry.csv') }}
+          key: archive-${{ hashFiles('cdc_archive/registry.csv') }}
 
       - name: Refresh
         id: refresh

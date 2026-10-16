@@ -13,7 +13,7 @@ Checks before a file is archived: the API's own row count (`count(*)`) equals th
 records, and `rowsUpdatedAt` is the same before and after the download (no release mid-download).
 
 Usage:
-    python archive/archive_cdc.py [--registry archive/registry.csv] [--work <dir>] [--dry-run]
+    python cdc_archive/archive_cdc.py [--registry cdc_archive/registry.csv] [--work <dir>] [--dry-run]
 
 --dry-run downloads, checks, and compresses into --work but uploads nothing and leaves the
 registry unchanged. Uploading uses the GitHub CLI (`gh`, with GH_TOKEN) on the repository in
@@ -107,7 +107,7 @@ def gh(*args: str) -> subprocess.CompletedProcess:
 def upload(tag: str, files: list[Path]) -> None:
     if gh("release", "view", tag).returncode != 0:
         notes = ("Unmodified CDC data.cdc.gov releases from the week ending " + tag[4:] +
-                 " (US Eastern), xz-compressed. See archive/registry.csv for each file's source and checksums.")
+                 " (US Eastern), xz-compressed. See cdc_archive/registry.csv for each file's source and checksums.")
         p = gh("release", "create", tag, "--title", tag, "--notes", notes, "--latest=false")
         if p.returncode != 0:
             raise SystemExit(f"gh release create {tag} failed: {p.stderr.strip()}")

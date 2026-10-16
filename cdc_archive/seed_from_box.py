@@ -4,14 +4,14 @@ Those releases exist only as dated files kept by an earlier download process, de
 snapshot registries (NHSN/NSSP and NWSS; columns stream_id, release_channel, filename,
 source_relative_path, as_of_date, sha256, ...). Each listed file is checked against its registry
 SHA-256, stored unchanged but xz-compressed as an asset of release `raw-<Friday>` (the Friday ending
-its Saturday-to-Friday week), and added to archive/registry.csv with source `box_archive`, its
+its Saturday-to-Friday week), and added to cdc_archive/registry.csv with source `box_archive`, its
 original file name, and a blank rows_updated_at (only the file's date is known). A release whose
 (stream, channel, date) is already archived from the API is skipped, so each release is archived
 once. Files already in the registry (same raw SHA-256) are skipped, so the script can be rerun.
 
 Usage:
-    python archive/seed_from_box.py --data-root <dir> --source-registry <nhsn_nssp.csv> <nwss.csv>
-        [--registry archive/registry.csv] [--work <dir>] [--limit N] [--dry-run]
+    python cdc_archive/seed_from_box.py --data-root <dir> --source-registry <nhsn_nssp.csv> <nwss.csv>
+        [--registry cdc_archive/registry.csv] [--work <dir>] [--limit N] [--dry-run]
 """
 from __future__ import annotations
 

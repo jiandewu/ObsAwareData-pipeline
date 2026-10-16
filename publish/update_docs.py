@@ -20,7 +20,7 @@ previous release), and the refresh's change_summary.csv.
 
 Usage:
     python update_docs.py --repo <ObsAwareData dir> --tag v1.0.0+2026-10-16 --as-of 2026-10-16
-        --archive-registry <archive/registry.csv> [--change-summary <change_summary.csv>]
+        --archive-registry <cdc_archive/registry.csv> [--change-summary <change_summary.csv>]
         [--release-date YYYY-MM-DD]
 """
 from __future__ import annotations

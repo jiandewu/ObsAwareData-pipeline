@@ -26,14 +26,14 @@ jobs:
       - name: Download and archive new CDC releases
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python archive/archive_cdc.py --registry archive/registry.csv --work "$RUNNER_TEMP/archive"
+        run: python cdc_archive/archive_cdc.py --registry cdc_archive/registry.csv --work "$RUNNER_TEMP/archive"
 
       - name: Commit the registry
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add archive/registry.csv 2>/dev/null || exit 0
+          git add cdc_archive/registry.csv 2>/dev/null || exit 0
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "Archive CDC releases ($(date -u +%Y-%m-%d))"
           git push

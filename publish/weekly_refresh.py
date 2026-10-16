@@ -12,7 +12,7 @@ Stages (run in order; --start-at resumes after a failure without redoing earlier
     process   run_state_pipeline.py --as-of into <work-root>/<as-of>/; every state must PASS
     build     build_obsawaredata.py into the ObsAwareData working tree, with every state's
               revision history written to <assets-root>/<tag>/ and each source snapshot linked to
-              its file in the archive (archive/registry.csv); every state's checks must pass
+              its file in the archive (cdc_archive/registry.csv); every state's checks must pass
     summary   compare the rebuilt latest tables with the repository's HEAD and write
               <work-root>/<as-of>/change_summary.md (+ .csv)
     docs      update_docs.py: refresh the dated facts in the repository's documentation, CHANGELOG
@@ -62,7 +62,7 @@ for _var in ("OAD_DATA_ROOT", "OAD_OUTPUT_ROOT"):
 DATA = Path(os.environ["OAD_DATA_ROOT"])
 OUTPUTS = Path(os.environ["OAD_OUTPUT_ROOT"])
 CROSS_STATE = HERE.parent / "reference"  # national geography audit and state threshold outputs
-ARCHIVE_REGISTRY = HERE.parent / "archive" / "registry.csv"
+ARCHIVE_REGISTRY = HERE.parent / "cdc_archive" / "registry.csv"
 STAGES = ["register", "process", "build", "summary"]
 STREAM_FEATURE = {"nhsn": "hospital_admission_count", "nssp": "ed_visit_percent", "nwss": "wastewater_activity_level"}
 
@@ -115,10 +115,12 @@ def git(repo: Path, *args: str) -> str:
 
 
 def archive_repo() -> str:
-    """<owner>/<name> holding the archive of CDC releases: GITHUB_REPOSITORY, else this checkout's origin."""
+    """<owner>/<name> holding the archive of CDC releases: GITHUB_REPOSITORY, else this checkout's
+    remote named 'public' (a development clone whose origin is elsewhere), else its origin."""
     if os.environ.get("GITHUB_REPOSITORY"):
         return os.environ["GITHUB_REPOSITORY"]
-    m = re.search(r"github\.com[:/](.+?/.+?)(?:\.git)?$", git(HERE, "remote", "get-url", "origin").strip())
+    remote = "public" if "public" in git(HERE, "remote").split() else "origin"
+    m = re.search(r"github\.com[:/](.+?/.+?)(?:\.git)?$", git(HERE, "remote", "get-url", remote).strip())
     if not m:
         raise SystemExit("Cannot tell which GitHub repository holds the archive; set GITHUB_REPOSITORY.")
     return m.group(1)
