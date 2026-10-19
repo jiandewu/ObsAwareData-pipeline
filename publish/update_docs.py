@@ -9,7 +9,8 @@ and this script rewrites every marked value from the build outputs. It also sets
 `date-released` in CITATION.cff and writes the release's CHANGELOG entry: a new entry is added when
 the tag has none (marked as a data refresh when the version is unchanged; for the first release or a
 new version, with the description written in changes/<version>.md next to this script, which must
-exist), and the entry's generated block is rewritten on every run:
+exist), and that entry's generated block (only that entry's; older entries keep theirs) is rewritten
+on every run:
 the source releases used, the revision-history assets, the comparison with the previous release, and
 the source changes found in it (rows no longer present, a source's last week moving back). Text
 outside the markers is never changed.
@@ -146,11 +147,21 @@ def change_warnings(rows: list[dict]) -> list[str]:
     return out
 
 
+def set_entry_block(text: str, version: str, block: str) -> str:
+    """Rewrite the changelog_data block of this version's entry only; older entries keep theirs."""
+    m = re.search(rf"^## {re.escape(version)} \(released [0-9-]+\)$", text, re.M)
+    nxt = re.search(r"^## ", text[m.end():], re.M)
+    stop = m.end() + nxt.start() if nxt else len(text)
+    section = MARKER.sub(lambda b: f"<!-- auto:changelog_data -->{block}<!-- /auto:changelog_data -->"
+                         if b.group(1) == "changelog_data" else b.group(0), text[m.end():stop])
+    return text[:m.end()] + section + text[stop:]
+
+
 def update_changelog(text: str, args: argparse.Namespace, block: str, released: str) -> str:
     version = args.tag[1:]
     head = re.compile(rf"^## {re.escape(version)} \(released [0-9-]+\)$", re.M)
     if head.search(text):
-        return head.sub(f"## {version} (released {released})", text)
+        return set_entry_block(head.sub(f"## {version} (released {released})", text), version, block)
     prev = previous_tag(args.repo)
     if prev and prev[1:].split("+")[0] == version.split("+")[0]:
         intro = "Data refresh with newer CDC source releases; the build rules are unchanged."
@@ -197,6 +208,8 @@ def main() -> None:
                 unknown.add(f"{name}:{key}")
                 return m.group(0)
             used.add(key)
+            if name == "CHANGELOG.md" and key == "changelog_data":  # set per entry by update_changelog
+                return m.group(0)
             return f"<!-- auto:{key} -->{f[key]}<!-- /auto:{key} -->"
 
         new = MARKER.sub(fill, new)
