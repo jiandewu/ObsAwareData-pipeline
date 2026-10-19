@@ -27,10 +27,10 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out the data repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.DATA_REPO }}
           token: ${{ secrets.OBSAWAREDATA_TOKEN }}

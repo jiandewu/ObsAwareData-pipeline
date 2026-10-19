@@ -41,7 +41,7 @@ env:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
       tag: ${{ steps.refresh.outputs.tag }}
@@ -51,17 +51,17 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check out the data repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.DATA_REPO }}
           token: ${{ secrets.OBSAWAREDATA_TOKEN }}
           path: out/ObsAwareData
           fetch-depth: 0  # tags: the pre-run checks compare with the latest release
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -72,7 +72,7 @@ jobs:
       # even after a failure), so a failed run still leaves them for the next one.
       - name: Restore archived CDC files
         id: archive-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: cache/archive
           key: archive-${{ hashFiles('cdc_archive/registry.csv') }}
@@ -80,13 +80,13 @@ jobs:
 
       - name: Restore Census inputs
         id: census-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: data/Census Data
           key: census-${{ hashFiles('tools/fetch_census.py') }}
 
       - name: Restore snapshot registries  # reuses file profiles, so only new files are read
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: out/weekly_runs/registry
           key: registry-${{ github.run_id }}
@@ -97,7 +97,7 @@ jobs:
 
       - name: Save Census inputs
         if: steps.census-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: data/Census Data
           key: census-${{ hashFiles('tools/fetch_census.py') }}
@@ -107,7 +107,7 @@ jobs:
 
       - name: Save archived CDC files
         if: steps.archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: cache/archive
           key: archive-${{ hashFiles('cdc_archive/registry.csv') }}
@@ -194,14 +194,14 @@ jobs:
 
       - name: Save snapshot registries
         if: always() && hashFiles('out/weekly_runs/registry/*.csv') != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: out/weekly_runs/registry
           key: registry-${{ github.run_id }}
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: refresh-logs
           path: |
