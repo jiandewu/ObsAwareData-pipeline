@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Keep the refresh's snapshot registries cached  # read only; unread caches are evicted after 7 days
+        uses: actions/cache/restore@v5
+        with:
+          path: out/weekly_runs/registry
+          key: registry-${{ github.run_id }}
+          restore-keys: registry-
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
