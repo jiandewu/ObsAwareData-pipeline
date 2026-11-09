@@ -219,3 +219,63 @@ jobs:
     with:
       tag: ${{ needs.refresh.outputs.tag }}
     secrets: inherit
+
+  # One issue per run, success or not, so the owner gets an email either way (the @mention ensures
+  # it). Closed on success; a failure stays open until handled.
+  notify:
+    needs: [refresh, publish]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      actions: read  # to name the failed steps
+    steps:
+      - name: Report the result in an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.refresh.outputs.tag }}
+          REFRESH: ${{ needs.refresh.result }}
+          PUBLISH: ${{ needs.publish.result }}
+          EVENT: ${{ github.event_name }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # publish is skipped only after a failed refresh or on a manual run with publish unticked
+          if [ "$REFRESH" = success ] && [ "$PUBLISH" != failure ] && [ "$PUBLISH" != cancelled ]; then
+            ok=1; status=succeeded
+          else
+            ok=; status=failed
+          fi
+          title="Refresh $(date -u +%Y-%m-%d) $status${TAG:+: $TAG}"
+          [ "$EVENT" = schedule ] && kind=scheduled || kind=manual
+          {
+            echo "@$OWNER the $kind refresh $status."
+            echo
+            echo "- Refresh: $REFRESH; publish: $PUBLISH"
+            echo "- Release tag: ${TAG:-none}"
+            if [ -n "$TAG" ]; then
+              echo "- Data repository: https://github.com/$DATA_REPO/pulls?q=is%3Apr+%22${TAG//+/%2B}%22, release https://github.com/$DATA_REPO/releases/tag/${TAG//+/%2B}"
+            fi
+            echo "- Run and logs: $RUN_URL"
+            if [ -z "$ok" ]; then
+              echo
+              echo "Failed steps:"
+              gh run view "$GITHUB_RUN_ID" --json jobs \
+                --jq '.jobs[] | . as $j | .steps[] | select(.conclusion == "failure") | "- \($j.name): \(.name)"' \
+                || echo "- (could not list them; see the run)"
+            fi
+          } > body.md
+          cat body.md
+
+          # A create can succeed even when the call reports an error, so check before retrying.
+          url=
+          for n in 1 2 3; do
+            url=$(gh issue create --title "$title" --body-file body.md) && break
+            sleep $((30 * n))
+            url=$(gh issue list --state all --search "in:title \"$title\"" --json url --jq '.[0].url // empty' || true)
+            [ -n "$url" ] && break
+          done
+          [ -n "$url" ] || { echo "::error::could not open the issue"; exit 1; }
+          echo "$url"
+          if [ -n "$ok" ]; then gh issue close "$url" --reason completed; fi
