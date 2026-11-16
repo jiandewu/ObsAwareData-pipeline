@@ -44,6 +44,7 @@ import gzip
 import hashlib
 import re
 import shutil
+import time
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
@@ -235,6 +236,23 @@ def read_chains(repo: Path) -> dict[str, list[dict]]:
     return chains
 
 
+def download(url: str, p: Path, attempts: int = 5) -> None:
+    """Download url to p, retrying; a partial download is never left at p (urlretrieve leaves one
+    behind when the connection drops, which a rerun would then take as complete)."""
+    part = p.with_name(p.name + ".part")
+    for n in range(1, attempts + 1):
+        try:
+            urllib.request.urlretrieve(url, part)
+            break
+        except OSError as e:  # includes URLError and ContentTooShortError
+            part.unlink(missing_ok=True)
+            if n == attempts:
+                raise
+            print(f"{p.name}: download failed ({e}); retrying in {30 * n} s", flush=True)
+            time.sleep(30 * n)
+    part.replace(p)
+
+
 def chain_paths(chain: list[dict], assets_root: Path) -> list[Path]:
     """Local copies of a chain's files (<assets root>/<tag>/<file>), downloaded when missing."""
     paths = []
@@ -242,8 +260,9 @@ def chain_paths(chain: list[dict], assets_root: Path) -> list[Path]:
         p = assets_root / a["tag"] / a["file"]
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(a["url"], p)
+            download(a["url"], p)
         if sha256(p) != a["sha256"]:
+            p.unlink()  # so a retry downloads it again
             raise SystemExit(f"{p}: SHA-256 differs from metadata/release_assets.csv")
         paths.append(p)
     return paths
