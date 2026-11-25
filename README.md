@@ -20,12 +20,24 @@ so each release has to be saved before the next one replaces it.
 | `nssp` | `standard` | NSSP Emergency Department Visit Trajectories by State and Sub State Regions | [`rdmq-nq56`](https://data.cdc.gov/d/rdmq-nq56) |
 | `nwss` | `standard` | CDC Wastewater Viral Activity Level for SARS-CoV-2, Influenza A and RSV | [`atcp-73re`](https://data.cdc.gov/d/atcp-73re) |
 
-A release is detected by the dataset's `rowsUpdatedAt` time. Its full CSV export is stored
-byte-for-byte as downloaded, compressed with xz, together with the dataset's metadata (column
-definitions and description), as assets of the GitHub release `raw-<YYYY-MM-DD>`: the Friday that
-ends the Saturday-to-Friday week of the CDC release (US Eastern time). Before a file is archived,
-its record count must equal the API's own row count, and the release time must be unchanged after
-the download.
+A release is detected by the dataset's `rowsUpdatedAt` time. It is stored, compressed with xz,
+together with the dataset's metadata (column definitions and description), as assets of the GitHub
+release `raw-<YYYY-MM-DD>`: the Friday that ends the Saturday-to-Friday week of the CDC release (US
+Eastern time).
+
+Until 2026-11-24 the stored file is data.cdc.gov's full CSV export, byte for byte as downloaded.
+That export was retired in November 2026, and its replacement formats numbers for display
+(thousands separators, and rounding half up to each column's display precision). From 2026-11-25
+on, each release is downloaded through the SODA API (`/resource/<id>.csv`, all rows), stored
+unmodified as `<name>.soda.csv.xz`, and the main file is rebuilt from it in the former export's
+layout: same columns and names, numbers with the same decimals and half-to-even rounding, dates as
+`YYYY-MM-DD`. For releases available both ways, the rebuilt file was identical byte for byte to the
+former export (NHSN standard and preliminary, NWSS) or value for value (NSSP).
+
+Before a release is archived, its record count must equal the API's own row count, the release time
+must be unchanged after the download, and it must have at least 90% of the rows of the previous
+archived release. CDC replaces a dataset in steps, so a release can briefly hold only part of the
+data; a smaller release is checked again for 30 minutes and then left for the next run.
 
 ## Registry
 
@@ -38,11 +50,12 @@ the download.
 | `as_of_date` | Release date in US Eastern time |
 | `retrieved_at` | When the file was downloaded (UTC; for `box_archive`, the saved file's modification time) |
 | `release_tag`, `file`, `metadata_file` | Where the file is: `https://github.com/<this repository>/releases/download/<release_tag>/<file>` |
-| `raw_bytes`, `raw_sha256` | Size and SHA-256 of the CSV as downloaded (after decompression) |
+| `raw_bytes`, `raw_sha256` | Size and SHA-256 of the CSV (after decompression): as downloaded, or, when `soda_file` is set, as rebuilt |
 | `xz_bytes`, `xz_sha256` | Size and SHA-256 of the stored `.xz` file |
 | `row_count`, `column_count` | CSV records (excluding the header) and columns |
 | `source` | `cdc_api` for files saved by `archive_cdc.py`; `box_archive` for earlier releases (below) |
 | `original_filename` | For `box_archive` files, the dated file name they were saved under |
+| `soda_file`, `soda_sha256` | From 2026-11-25: the SODA API download the main file was rebuilt from (in the same release), and its SHA-256 after decompression; blank before |
 
 To use a file: download it, check `xz_sha256`, decompress (`xz -d`), and check `raw_sha256`.
 
@@ -85,5 +98,5 @@ python publish/weekly_refresh.py [--as-of 2026-10-09] [--states SC]
 
 ## Data and license
 
-The archived files are CDC data, unmodified; see each dataset's page on data.cdc.gov for its terms
+The archived files are CDC data (from 2026-11-25 on, rebuilt in the former export's layout from the unmodified API download archived next to them); see each dataset's page on data.cdc.gov for its terms
 and suggested citation. The code in this repository is released under the [MIT License](LICENSE).
